@@ -4,13 +4,10 @@ using MapStitcher.Repositories.Contracts;
 
 namespace MapStitcher.Business.Services
 {
-    // Placement strategy: pure Laghu Reference index chaining.
-    // No reliable tie-point labels or georeference data are available, so grid
-    // adjacency is derived solely from LaghuReferenceNumber <-> SheetNumber links.
-    // A linked sheet is dropped into the first open cell (E, S, W, N order)
-    // around its linked, already-placed neighbor — direction has no real-world
-    // meaning here since no spatial source data exists; it only keeps sheets
-    // visually adjacent on the jigsaw grid.
+    // Placement strategy: prefer Laghu Reference index chaining for consistent
+    // grid adjacency, but fall back to centroid-offset spatial placement when no
+    // Laghu link exists. Offsets follow compass order (E, S, W, N) with the
+    // incoming sheet's centroid delta determining preferred direction.
     public class SheetPlacementService : ISheetPlacementService
     {
         private static readonly (int dRow, int dCol)[] AdjacencyOffsets =
@@ -21,11 +18,21 @@ namespace MapStitcher.Business.Services
             (-1, 0),  // North
         };
 
-        private readonly ISurveySheetRepository _sheetRepo;
+        private static readonly (int dRow, int dCol)[] CentroidOffsets =
+        {
+            (0, 1),   // East  — dx dominates, dx > 0
+            (0, -1),  // West  — dx dominates, dx < 0
+            (1, 0),   // South — dy dominates, dy > 0
+            (-1, 0),  // North — dy dominates, dy < 0
+        };
 
-        public SheetPlacementService(ISurveySheetRepository sheetRepo)
+        private readonly ISurveySheetRepository _sheetRepo;
+        private readonly ITiePointRepository _tiePointRepo;
+
+        public SheetPlacementService(ISurveySheetRepository sheetRepo, ITiePointRepository tiePointRepo)
         {
             _sheetRepo = sheetRepo;
+            _tiePointRepo = tiePointRepo;
         }
 
         public async Task<PlacementResult> AutoPlaceSheetAsync(int sheetId)
@@ -45,15 +52,88 @@ namespace MapStitcher.Business.Services
                 return await CommitPlacement(sheet, 0, 0, PlacementMode.Auto);
             }
 
+            // 1) Try Laghu Reference link first
             var linkedSheet = FindLaghuLinkedSheet(sheet, placedSheets);
-            if (linkedSheet == null)
-                return Fail(sheetId, "No Laghu Reference link found to any placed sheet. Use manual placement.");
+            if (linkedSheet != null)
+            {
+                var openCell = FindFirstOpenAdjacentCell(linkedSheet, placedSheets);
+                if (openCell != null)
+                    return await CommitPlacement(sheet, openCell.Value.row, openCell.Value.col, PlacementMode.Auto);
+            }
 
-            var openCell = FindFirstOpenAdjacentCell(linkedSheet, placedSheets);
-            if (openCell == null)
-                return Fail(sheetId, $"All grid cells around linked sheet {linkedSheet.SheetNumber} are occupied. Use manual placement.");
+            // 2) Fallback: centroid-offset spatial placement when no Laghu link exists
+            var placement = TryCentroidPlacement(sheet, placedSheets);
+            if (placement != null)
+                return placement;
 
-            return await CommitPlacement(sheet, openCell.Value.row, openCell.Value.col, PlacementMode.Auto);
+            // 3) Last resort: find any empty cell in a simple row-major sweep
+            for (int r = 0; r < 20; r++)
+            {
+                for (int c = 0; c < 20; c++)
+                {
+                    if (!placedSheets.Any(s => s.GridRow == r && s.GridCol == c))
+                        return await CommitPlacement(sheet, r, c, PlacementMode.Auto);
+                }
+            }
+
+            return Fail(sheetId, "Could not find an empty grid cell. Increase grid size or use manual placement.");
+        }
+
+        private static PlacementResult? TryCentroidPlacement(SurveySheet sheet, List<SurveySheet> placedSheets)
+        {
+            var incomingPoints = await _tiePointRepo.GetBySheetIdAsync(sheet.SheetID);
+            var labeledPoints = incomingPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+            if (!labeledPoints.Any())
+                return null;
+
+            var incomingCentroidX = labeledPoints.Average(p => p.SourceX);
+            var incomingCentroidY = labeledPoints.Average(p => p.SourceY);
+
+            foreach (var placedSheet in placedSheets)
+            {
+                var placedPoints = await _tiePointRepo.GetBySheetIdAsync(placedSheet.SheetID);
+                var placedLabeled = placedPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+                if (!placedLabeled.Any())
+                    continue;
+
+                var sharedLabels = labeledPoints
+                    .Select(p => p.PointLabel)
+                    .Intersect(placedLabeled.Select(p => p.PointLabel))
+                    .ToList();
+
+                if (!sharedLabels.Any())
+                    continue;
+
+                var sharedIncoming = labeledPoints.Where(p => sharedLabels.Contains(p.PointLabel)).ToList();
+                var sharedPlaced = placedPoints.Where(p => sharedLabels.Contains(p.PointLabel)).ToList();
+
+                double placedCentroidX = sharedPlaced.Average(p => p.SourceX);
+                double placedCentroidY = sharedPlaced.Average(p => p.SourceY);
+
+                double dx = incomingCentroidX - placedCentroidX;
+                double dy = incomingCentroidY - placedCentroidY;
+
+                // Determine preferred direction from centroid delta
+                (int dRow, int dCol) preferred;
+                if (Math.Abs(dx) >= Math.Abs(dy))
+                    preferred = dx > 0 ? (0, -1) : (0, 1);  // West or East
+                else
+                    preferred = dy > 0 ? (1, 0) : (-1, 0);  // South or North
+
+                // Try preferred direction, then alternate
+                foreach (var (tdRow, tdCol) in new[] { preferred, (0, 1), (0, -1), (1, 0), (-1, 0) })
+                {
+                    int targetRow = placedSheet.GridRow!.Value + tdRow;
+                    int targetCol = placedSheet.GridCol!.Value + tdCol;
+
+                    if (placedSheets.Any(s => s.GridRow == targetRow && s.GridCol == targetCol))
+                        continue;
+
+                    return await CommitPlacement(sheet, targetRow, targetCol, PlacementMode.Auto);
+                }
+            }
+
+            return null;
         }
 
         // Returns every open grid cell adjacent to a Laghu-linked, already-placed
@@ -71,22 +151,58 @@ namespace MapStitcher.Business.Services
                 .ToList();
 
             if (!placedSheets.Any())
-                return slots; // Nothing placed yet — this would anchor at (0,0), not a "connect" case.
+                return slots; // Nothing placed yet — would anchor at (0,0), no "connect" slots
 
-            var linkedSheet = FindLaghuLinkedSheet(sheet, placedSheets);
-            if (linkedSheet == null)
+            var incomingPoints = await _tiePointRepo.GetBySheetIdAsync(sheet.SheetID);
+            var labeledPoints = incomingPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+            if (!labeledPoints.Any())
                 return slots;
 
-            foreach (var (dRow, dCol) in AdjacencyOffsets)
+            foreach (var placedSheet in placedSheets)
             {
-                int targetRow = linkedSheet.GridRow!.Value + dRow;
-                int targetCol = linkedSheet.GridCol!.Value + dCol;
+                var placedPoints = await _tiePointRepo.GetBySheetIdAsync(placedSheet.SheetID);
+                var placedLabeled = placedPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+                if (!placedLabeled.Any())
+                    continue;
 
-                bool occupied = placedSheets.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
-                bool alreadyListed = slots.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
+                var sharedLabels = labeledPoints
+                    .Select(p => p.PointLabel)
+                    .Intersect(placedLabeled.Select(p => p.PointLabel))
+                    .ToList();
 
-                if (!occupied && !alreadyListed)
-                    slots.Add(new OpenSlot { GridRow = targetRow, GridCol = targetCol });
+                if (!sharedLabels.Any())
+                    continue;
+
+                double incomingCentroidX = labeledPoints.Average(p => p.SourceX);
+                double incomingCentroidY = labeledPoints.Average(p => p.SourceY);
+
+                var sharedPlacedPoints = placedPoints
+                    .Where(p => sharedLabels.Contains(p.PointLabel))
+                    .ToList();
+
+                double placedCentroidX = sharedPlacedPoints.Average(p => p.SourceX);
+                double placedCentroidY = sharedPlacedPoints.Average(p => p.SourceY);
+
+                double dx = incomingCentroidX - placedCentroidX;
+                double dy = incomingCentroidY - placedCentroidY;
+
+                // Determine preferred direction from centroid delta
+                var preferred = Math.Abs(dx) >= Math.Abs(dy)
+                    ? (dx > 0 ? (0, -1) : (0, 1))  // West or East
+                    : (dy > 0 ? (1, 0) : (-1, 0));  // South or North
+
+                // Add slots in preferred direction, then alternate
+                foreach (var (tdRow, tdCol) in new[] { preferred, (0, 1), (0, -1), (1, 0), (-1, 0) })
+                {
+                    int targetRow = placedSheet.GridRow!.Value + tdRow;
+                    int targetCol = placedSheet.GridCol!.Value + tdCol;
+
+                    bool occupied = placedSheets.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
+                    bool alreadyListed = slots.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
+
+                    if (!occupied && !alreadyListed)
+                        slots.Add(new OpenSlot { GridRow = targetRow, GridCol = targetCol });
+                }
             }
 
             return slots;

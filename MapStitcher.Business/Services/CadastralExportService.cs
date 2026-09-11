@@ -92,6 +92,22 @@ namespace MapStitcher.Business.Services
             double rotatedX = scaledX * cos - scaledY * sin;
             double rotatedY = scaledX * sin + scaledY * cos;
 
+            // If the sheet has an identity transform (never merged), apply a
+            // default grid-based separation offset so all sheets stay spatially
+            // separated in the export rather than collapsing at the origin.
+            bool isIdentity = sheet.TransformScale == 1.0
+                              && sheet.TransformRotation == 0.0
+                              && sheet.TransformTranslateX == 0.0
+                              && sheet.TransformTranslateY == 0.0;
+
+            if (isIdentity && sheet.GridRow.HasValue && sheet.GridCol.HasValue)
+            {
+                // Use grid position as a deterministic offset to prevent overlap.
+                // 100.0 units per grid cell keeps sheets visibly separated.
+                rotatedX += sheet.GridCol.Value * 100.0;
+                rotatedY += sheet.GridRow.Value * 100.0;
+            }
+
             return (rotatedX + sheet.TransformTranslateX, rotatedY + sheet.TransformTranslateY);
         }
     }

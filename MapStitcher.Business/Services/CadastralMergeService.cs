@@ -5,14 +5,15 @@ using MapStitcher.Repositories.Contracts;
 
 namespace MapStitcher.Business.Services
 {
-    // Merge strategy: pure Laghu Reference index chaining.
-    // No georeference (TargetX/TargetY) data available; RMS/tie-point spatial
-    // validation removed. Two sheets are considered a valid, mergeable match
-    // when one sheet's LaghuReferenceNumber equals the other's SheetNumber.
-    // Shared tie points (if any) are used only to compute a simple visual
-    // translation offset — never as a pass/fail gate.
+    // Merge strategy: pure Laghu Reference index chaining for the link,
+// with tie-point label matching as the primary pairing method, and a
+// centroid-offset spatial fallback when no labeled pairs are found.
+// This ensures at least a best-effort translation is always computed,
+// preventing sheets from keeping identity transforms and collapsing at origin.
     public class CadastralMergeService : ICadastralMergeService
     {
+        private const double SpatialThreshold = 25.0; // pixels — used for centroid fallback matching
+
         private readonly ITiePointRepository _tiePointRepo;
         private readonly ISurveySheetRepository _sheetRepo;
 
@@ -52,10 +53,19 @@ namespace MapStitcher.Business.Services
             double translateX = 0;
             double translateY = 0;
 
+            // Always compute a best-effort translation:
+            // 1) If labeled pairs matched, use their average offset
+            // 2) Otherwise, fall back to centroid difference of ALL labeled points
             if (matchedPairs.Count > 0)
             {
                 translateX = matchedPairs.Average(p => p.BasePoint.SourceX - p.AdjacentPoint.SourceX);
                 translateY = matchedPairs.Average(p => p.BasePoint.SourceY - p.AdjacentPoint.SourceY);
+            }
+            else if (basePoints.Count > 0 && adjacentPoints.Count > 0)
+            {
+                // Centroid fallback: translate so that the two sheets' point clouds align
+                translateX = basePoints.Average(p => p.SourceX) - adjacentPoints.Average(p => p.SourceX);
+                translateY = basePoints.Average(p => p.SourceY) - adjacentPoints.Average(p => p.SourceY);
             }
 
             foreach (var point in adjacentPoints)
@@ -105,6 +115,7 @@ namespace MapStitcher.Business.Services
         {
             var pairs = new List<(TiePoint, TiePoint)>();
 
+            // 1) Primary: exact PointLabel matching
             foreach (var basePoint in basePoints)
             {
                 if (string.IsNullOrWhiteSpace(basePoint.PointLabel))
@@ -113,6 +124,36 @@ namespace MapStitcher.Business.Services
                 var match = adjacentPoints.FirstOrDefault(a => a.PointLabel == basePoint.PointLabel);
                 if (match != null)
                     pairs.Add((basePoint, match));
+            }
+
+            // 2) Spatial fallback: if no labeled pairs matched, match by closest
+            // centroid proximity using the spatial threshold. This ensures at least
+            // some translation is computed even when PointLabels are missing or mismatched.
+            if (pairs.Count == 0)
+            {
+                var labeledBase = basePoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+                var labeledAdjacent = adjacentPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+
+                if (labeledBase.Any() && labeledAdjacent.Any())
+                {
+                    // Try matching each base point to its closest adjacent point within threshold
+                    foreach (var basePoint in labeledBase)
+                    {
+                        var bestMatch = labeledAdjacent
+                            .OrderBy(a => Math.Sqrt(
+                                Math.Pow(a.SourceX - basePoint.SourceX, 2) +
+                                Math.Pow(a.SourceY - basePoint.SourceY, 2)))
+                            .FirstOrDefault();
+
+                        if (bestMatch != null &&
+                            Math.Sqrt(
+                                Math.Pow(bestMatch.SourceX - basePoint.SourceX, 2) +
+                                Math.Pow(bestMatch.SourceY - basePoint.SourceY, 2)) <= SpatialThreshold)
+                        {
+                            pairs.Add((basePoint, bestMatch));
+                        }
+                    }
+                }
             }
 
             return pairs;
