@@ -69,40 +69,28 @@ namespace MapStitcher.Business.Services
             {
                 switch (entity)
                 {
-                    case TextEntity text when text.InsertPoint != null:
+                    case TextEntity text:
                         ExtractTextCandidate(
                             text.Value,
                             text.Layer?.Name,
-                            text.InsertPoint.Value.X,
-                            text.InsertPoint.Value.Y,
-                            sheet,
-                            textCandidates);
-                        break;
-
-                    case TextEntity text:
-                        // InsertPoint null — skip this entity gracefully
-                        break;
-
-                    case MText mtext when mtext.InsertPoint != null:
-                        ExtractTextCandidate(
-                            mtext.Value,
-                            mtext.Layer?.Name,
-                            mtext.InsertPoint.Value.X,
-                            mtext.InsertPoint.Value.Y,
+                            text.InsertPoint.X,
+                            text.InsertPoint.Y,
                             sheet,
                             textCandidates);
                         break;
 
                     case MText mtext:
-                        // InsertPoint null — skip this entity gracefully
+                        ExtractTextCandidate(
+                            mtext.Value,
+                            mtext.Layer?.Name,
+                            mtext.InsertPoint.X,
+                            mtext.InsertPoint.Y,
+                            sheet,
+                            textCandidates);
                         break;
 
-                    case Insert insert when insert.InsertPoint != null:
-                        rawPoints.Add((insert.InsertPoint.Value.X, insert.InsertPoint.Value.Y));
-                        break;
-
-                    case Insert:
-                        // InsertPoint null — skip this entity gracefully
+                    case Insert insert:
+                        rawPoints.Add((insert.InsertPoint.X, insert.InsertPoint.Y));
                         break;
 
                     case LwPolyline lwPoly:
@@ -253,10 +241,10 @@ namespace MapStitcher.Business.Services
             }
 
             // Accept alphanumeric text containing at least one digit, length 2-30.
-                // This allows "Sheet 5", "Plot 12A", "HOUSE-3" etc. to become candidates
-                // and tie-point labels, without which merge and grid placement fail.
-                if (rawText.Any(char.IsDigit) && rawText.Length >= 2 && rawText.Length <= 30)
-                    candidates.Add((rawText.Trim(), x, y));
+            // This allows "Sheet 5", "Plot 12A", "HOUSE-3" etc. to become candidates
+            // and tie-point labels, without which merge and grid placement fail.
+            if (rawText.Any(char.IsDigit) && rawText.Length >= 2 && rawText.Length <= 30)
+                candidates.Add((rawText.Trim(), x, y));
         }
 
         private async Task ProcessBoundaryAsync(IEnumerable<Coordinate> rawCoords, SurveySheet sheet)

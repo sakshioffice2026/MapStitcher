@@ -26,6 +26,7 @@ builder.Services.AddScoped<ICadastralMergeService, CadastralMergeService>();
 builder.Services.AddScoped<ISheetPlacementService, SheetPlacementService>();
 builder.Services.AddScoped<IStitchOrchestrationService, StitchOrchestrationService>();
 builder.Services.AddScoped<ICadastralExportService, CadastralExportService>();
+builder.Services.AddScoped<ISvgMosaicExportService, SvgMosaicExportService>();
 builder.Services.AddScoped<ICadastralParsingService>(sp =>
 {
     var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();

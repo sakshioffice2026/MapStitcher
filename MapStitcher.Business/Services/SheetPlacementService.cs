@@ -62,7 +62,7 @@ namespace MapStitcher.Business.Services
             }
 
             // 2) Fallback: centroid-offset spatial placement when no Laghu link exists
-            var placement = TryCentroidPlacement(sheet, placedSheets);
+            var placement = await TryCentroidPlacement(sheet, placedSheets);
             if (placement != null)
                 return placement;
 
@@ -79,7 +79,7 @@ namespace MapStitcher.Business.Services
             return Fail(sheetId, "Could not find an empty grid cell. Increase grid size or use manual placement.");
         }
 
-        private static PlacementResult? TryCentroidPlacement(SurveySheet sheet, List<SurveySheet> placedSheets)
+        private async Task<PlacementResult?> TryCentroidPlacement(SurveySheet sheet, List<SurveySheet> placedSheets)
         {
             var incomingPoints = await _tiePointRepo.GetBySheetIdAsync(sheet.SheetID);
             var labeledPoints = incomingPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();

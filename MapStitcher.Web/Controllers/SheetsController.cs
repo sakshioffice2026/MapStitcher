@@ -1,4 +1,5 @@
 ﻿using MapStitcher.Business.Contracts;
+using MapStitcher.Business.Services;
 using MapStitcher.Database;
 using MapStitcher.Model;
 using MapStitcher.Repositories.Contracts;
@@ -16,6 +17,7 @@ namespace MapStitcher.Web.Controllers
         private readonly ISheetPlacementService _placementService;
         private readonly IStitchOrchestrationService _stitchService;
         private readonly ICadastralExportService _exportService;
+        private readonly ISvgMosaicExportService _svgExportService;
         private readonly IWebHostEnvironment _env;
 
         private static readonly string[] AllowedExtensions = { ".dwg", ".dxf" };
@@ -30,12 +32,14 @@ namespace MapStitcher.Web.Controllers
             ISheetPlacementService placementService,
             IStitchOrchestrationService stitchService,
             ICadastralExportService exportService,
+            ISvgMosaicExportService svgExportService,
             IWebHostEnvironment env)
         {
             _sheetRepo = sheetRepo;
             _projectRepo = projectRepo;
             _tiePointRepo = tiePointRepo;
             _exportService = exportService;
+            _svgExportService = svgExportService;
             _parsingService = parsingService;
             _mergeService = mergeService;
             _placementService = placementService;
@@ -481,6 +485,25 @@ namespace MapStitcher.Web.Controllers
             catch (Exception ex)
             {
                 TempData["Error"] = $"Export failed: {ex.Message}";
+                return RedirectToAction("Workspace", new { projectId });
+            }
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> SvgPreview(int projectId)
+        {
+            var project = await _projectRepo.GetByIdAsync(projectId);
+            if (project == null)
+                return NotFound("Invalid ProjectID.");
+
+            try
+            {
+                var svg = await _svgExportService.BuildProjectSvgAsync(projectId);
+                return Content(svg, "image/svg+xml");
+            }
+            catch (InvalidOperationException ex)
+            {
+                TempData["Error"] = $"Mosaic preview failed: {ex.Message}";
                 return RedirectToAction("Workspace", new { projectId });
             }
         }

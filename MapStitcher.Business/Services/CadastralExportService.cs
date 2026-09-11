@@ -4,6 +4,7 @@ using ACadSharp.IO;
 using ACadSharp.Tables;
 using MapStitcher.Business.Contracts;
 using MapStitcher.Repositories.Contracts;
+using MapStitcher.Utilities;
 
 namespace MapStitcher.Business.Services
 {
@@ -45,7 +46,7 @@ namespace MapStitcher.Business.Services
 
                     foreach (var coord in coords)
                     {
-                        var (x, y) = ApplyTransform(sheet, coord.X, coord.Y);
+                        var (x, y) = SheetTransformHelper.Apply(sheet, coord.X, coord.Y);
                         polyline.Vertices.Add(new LwPolyline.Vertex(new CSMath.XY(x, y)));
                     }
 
@@ -63,7 +64,7 @@ namespace MapStitcher.Business.Services
                 if (boundaries.Any())
                 {
                     var firstCoord = boundaries.First().Geometry.Coordinates.First();
-                    var (lx, ly) = ApplyTransform(sheet, firstCoord.X, firstCoord.Y);
+                    var (lx, ly) = SheetTransformHelper.Apply(sheet, firstCoord.X, firstCoord.Y);
                     sheetLabel.InsertPoint = new CSMath.XYZ(lx, ly, 0);
                 }
 
@@ -77,38 +78,6 @@ namespace MapStitcher.Business.Services
             DxfWriter.Write(fullPath, document);
 
             return fullPath;
-        }
-
-        private static (double X, double Y) ApplyTransform(MapStitcher.Database.SurveySheet sheet, double x, double y)
-        {
-            // Reproduces the similarity transform saved during merge:
-            // scale -> rotate -> translate. Identity for never-merged sheets.
-            double scaledX = x * sheet.TransformScale;
-            double scaledY = y * sheet.TransformScale;
-
-            double cos = Math.Cos(sheet.TransformRotation);
-            double sin = Math.Sin(sheet.TransformRotation);
-
-            double rotatedX = scaledX * cos - scaledY * sin;
-            double rotatedY = scaledX * sin + scaledY * cos;
-
-            // If the sheet has an identity transform (never merged), apply a
-            // default grid-based separation offset so all sheets stay spatially
-            // separated in the export rather than collapsing at the origin.
-            bool isIdentity = sheet.TransformScale == 1.0
-                              && sheet.TransformRotation == 0.0
-                              && sheet.TransformTranslateX == 0.0
-                              && sheet.TransformTranslateY == 0.0;
-
-            if (isIdentity && sheet.GridRow.HasValue && sheet.GridCol.HasValue)
-            {
-                // Use grid position as a deterministic offset to prevent overlap.
-                // 100.0 units per grid cell keeps sheets visibly separated.
-                rotatedX += sheet.GridCol.Value * 100.0;
-                rotatedY += sheet.GridRow.Value * 100.0;
-            }
-
-            return (rotatedX + sheet.TransformTranslateX, rotatedY + sheet.TransformTranslateY);
         }
     }
 }
