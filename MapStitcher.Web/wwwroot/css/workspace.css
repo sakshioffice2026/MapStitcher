@@ -1,0 +1,184 @@
+﻿/* wwwroot/css/workspace.css */
+
+:root {
+    --blueprint-bg: #0f172a;
+    --grid-line: rgba(34, 211, 238, 0.15);
+    --grid-line-strong: rgba(34, 211, 238, 0.3);
+    --parchment: rgba(253, 246, 227, 0.85);
+    --parchment-border: rgba(0, 0, 0, 0.15);
+    --snap-success: #22c55e;
+    --connector-color: #22d3ee;
+    --text-dark: #1e293b;
+    --text-muted: #475569;
+    --panel-bg: #111827;
+    --panel-border: #1f2937;
+    --panel-text: #e2e8f0;
+}
+
+html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    font-family: 'Segoe UI', sans-serif;
+}
+
+.workspace-layout {
+    display: flex;
+    height: 100vh;
+    width: 100%;
+}
+
+/* Sidebar */
+.workspace-sidebar {
+    width: 240px;
+    background: var(--panel-bg);
+    border-right: 1px solid var(--panel-border);
+    color: var(--panel-text);
+    overflow-y: auto;
+    flex-shrink: 0;
+}
+
+    .workspace-sidebar h6 {
+        padding: 12px;
+        margin: 0;
+        border-bottom: 1px solid var(--panel-border);
+        font-size: 0.85rem;
+        text-transform: uppercase;
+        color: #94a3b8;
+    }
+
+.sidebar-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--panel-border);
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+    .sidebar-item:hover {
+        background: #1e293b;
+    }
+
+    .sidebar-item.active {
+        background: #164e63;
+    }
+
+/* Canvas Area */
+.workspace-canvas-wrapper {
+    flex: 1;
+    position: relative;
+    background-color: var(--blueprint-bg);
+    background-image: linear-gradient(var(--grid-line) 1px, transparent 1px), linear-gradient(90deg, var(--grid-line) 1px, transparent 1px), linear-gradient(var(--grid-line-strong) 1px, transparent 1px), linear-gradient(90deg, var(--grid-line-strong) 1px, transparent 1px);
+    background-size: 40px 40px, 40px 40px, 200px 200px, 200px 200px;
+    overflow: hidden;
+}
+
+.workspace-toolbar {
+    height: 48px;
+    background: var(--panel-bg);
+    border-bottom: 1px solid var(--panel-border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0 16px;
+    color: var(--panel-text);
+}
+
+#workspace {
+    position: relative;
+    width: 100%;
+    height: calc(100vh - 48px);
+}
+
+/* Sheet Card */
+.sheet-card {
+    position: absolute;
+    width: 220px;
+    padding: 14px;
+    background: var(--parchment);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    border: 1px solid var(--parchment-border);
+    border-radius: 6px;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+    cursor: grab;
+    user-select: none;
+}
+
+    .sheet-card:active {
+        cursor: grabbing;
+    }
+
+    .sheet-card.snapped {
+        border: 2px solid var(--snap-success);
+        box-shadow: 0 0 14px var(--snap-success);
+    }
+
+    .sheet-card.selected {
+        outline: 2px solid #38bdf8;
+    }
+
+    .sheet-card h6 {
+        margin: 0 0 4px 0;
+        color: var(--text-dark);
+        font-weight: 600;
+    }
+
+    .sheet-card small {
+        color: var(--text-muted);
+        display: block;
+    }
+
+/* Connector SVG Layer */
+#connectorLayer {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    pointer-events: none;
+}
+
+.connector-line {
+    stroke: var(--connector-color);
+    stroke-width: 2;
+    stroke-dasharray: 6 4;
+}
+
+    .connector-line.active {
+        stroke: var(--snap-success);
+    }
+
+/* Right Detail Panel */
+.workspace-detail-panel {
+    width: 280px;
+    background: var(--panel-bg);
+    border-left: 1px solid var(--panel-border);
+    color: var(--panel-text);
+    padding: 16px;
+    flex-shrink: 0;
+    overflow-y: auto;
+}
+
+    .workspace-detail-panel h6 {
+        text-transform: uppercase;
+        font-size: 0.85rem;
+        color: #94a3b8;
+        border-bottom: 1px solid var(--panel-border);
+        padding-bottom: 8px;
+        margin-bottom: 12px;
+    }
+
+.detail-row {
+    margin-bottom: 10px;
+    font-size: 0.85rem;
+}
+
+    .detail-row .label {
+        color: #94a3b8;
+        display: block;
+    }
+
+.detail-empty {
+    color: #64748b;
+    font-size: 0.85rem;
+}

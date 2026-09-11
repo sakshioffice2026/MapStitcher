@@ -1,0 +1,31 @@
+﻿@* Views/Projects/Index.cshtml *@
+@model List<MapStitcher.Database.Project>
+@{
+    ViewData["Title"] = "Projects";
+}
+
+<h3>Projects</h3>
+
+<table class="table table-striped">
+    <thead>
+        <tr>
+            <th>ID</th>
+            <th>Name</th>
+            <th>Created</th>
+            <th></th>
+        </tr>
+    </thead>
+    <tbody>
+        @foreach (var project in Model)
+        {
+            <tr>
+                <td>@project.ProjectID</td>
+                <td>@project.Name</td>
+                <td>@project.CreatedDate.ToString("yyyy-MM-dd")</td>
+                <td>
+                    <a class="btn btn-sm btn-outline-primary" asp-controller="Projects" asp-action="Details" asp-route-id="@project.ProjectID">Open</a>
+                </td>
+            </tr>
+        }
+    </tbody>
+</table>

@@ -1,0 +1,11 @@
+﻿@* Views/Projects/Details.cshtml *@
+@model MapStitcher.Database.Project
+@{
+    ViewData["Title"] = "Project Details";
+}
+
+<h3>@Model.Name</h3>
+<p>Created: @Model.CreatedDate.ToString("yyyy-MM-dd")</p>
+
+<a class="btn btn-primary" asp-controller="Sheets" asp-action="Upload" asp-route-projectId="@Model.ProjectID">Upload Sheet</a>
+<a class="btn btn-secondary" asp-controller="Sheets" asp-action="Workspace" asp-route-projectId="@Model.ProjectID">Open Workspace</a>

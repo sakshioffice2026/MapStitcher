@@ -1,0 +1,591 @@
+@model MapStitcher.Model.WorkspaceViewModel
+@{
+    ViewData["Title"] = "Jigsaw Board";
+    Layout = null;
+
+    var statusColor = new Dictionary<string, string>
+    {
+        ["Uploaded"]     = "#94a3b8",
+        ["Parsed"]       = "#3b82f6",
+        ["Georeferenced"]= "#f59e0b",
+        ["Merged"]       = "#22c55e",
+        ["Failed"]       = "#ef4444"
+    };
+
+    int gridRows = Math.Max(Model.GridRows, 3);
+    int gridCols = Math.Max(Model.GridCols, 3);
+}
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <title>Jigsaw Board — @Model.Village</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: #0f172a;
+            color: #e2e8f0;
+            font-family: 'Segoe UI', sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        .top-bar {
+            background: #1e293b;
+            border-bottom: 1px solid #334155;
+            padding: 10px 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            flex-shrink: 0;
+        }
+
+        .top-bar .jurisdiction { font-size: 13px; color: #94a3b8; }
+        .top-bar .jurisdiction span { color: #38bdf8; font-weight: 600; }
+        .top-bar .actions { display: flex; gap: 8px; }
+
+        .workspace-layout { display: flex; flex: 1; overflow: hidden; }
+
+        .sidebar {
+            width: 220px;
+            background: #1e293b;
+            border-right: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+
+        .sidebar-header {
+            padding: 12px 14px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #64748b;
+            border-bottom: 1px solid #334155;
+        }
+
+        .sidebar-sheet {
+            padding: 10px 14px;
+            border-bottom: 1px solid #1e293b;
+            cursor: pointer;
+            font-size: 12px;
+            transition: background 0.15s;
+            position: relative;
+        }
+
+        .sidebar-sheet:hover { background: #0f172a; }
+        .sidebar-sheet .sheet-num { font-weight: 600; color: #e2e8f0; }
+        .sidebar-sheet .sheet-status { font-size: 11px; margin-top: 2px; }
+        .sidebar-sheet.unplaced { border-left: 3px solid #f59e0b; }
+        .sidebar-sheet.placed   { border-left: 3px solid #22c55e; }
+
+        .sidebar-remove-btn {
+            position: absolute;
+            top: 8px;
+            right: 10px;
+            background: transparent;
+            border: none;
+            color: #475569;
+            font-size: 14px;
+            line-height: 1;
+            cursor: pointer;
+            padding: 2px 6px;
+            border-radius: 4px;
+        }
+
+        .sidebar-remove-btn:hover { color: #ef4444; background: #1e293b; }
+
+        .sidebar-upload { padding: 12px 14px; margin-top: auto; border-top: 1px solid #334155; }
+
+        .canvas-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+
+        .canvas-toolbar {
+            background: #1e293b;
+            border-bottom: 1px solid #334155;
+            padding: 8px 16px;
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            font-size: 12px;
+            color: #94a3b8;
+            flex-shrink: 0;
+        }
+
+        .view-toggle { display: flex; gap: 4px; }
+
+        .view-toggle button {
+            background: #0f172a;
+            border: 1px solid #334155;
+            color: #94a3b8;
+            padding: 3px 12px;
+            font-size: 11px;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+
+        .view-toggle button.active { background: #0284c7; border-color: #0284c7; color: #fff; }
+
+        .canvas-scroll {
+            flex: 1;
+            overflow: auto;
+            padding: 32px;
+            display: flex;
+            align-items: flex-start;
+            justify-content: center;
+        }
+
+        #grid-view {
+            display: grid;
+            gap: 6px;
+            grid-template-columns: repeat(@gridCols, 160px);
+            grid-template-rows: repeat(@gridRows, 120px);
+        }
+
+        .grid-cell {
+            border-radius: 6px;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            font-size: 12px;
+            position: relative;
+            transition: box-shadow 0.2s;
+        }
+
+        .grid-cell.empty { background: #1e293b; border: 2px dashed #334155; color: #475569; cursor: pointer; }
+        .grid-cell.empty:hover { border-color: #38bdf8; color: #38bdf8; }
+        .grid-cell.filled { background: #1e3a5f; border: 2px solid #0284c7; cursor: pointer; }
+        .grid-cell.filled:hover { box-shadow: 0 0 0 2px #38bdf8; }
+        .grid-cell .cell-label { font-weight: 700; font-size: 14px; color: #38bdf8; }
+        .grid-cell .cell-ref { font-size: 10px; color: #94a3b8; margin-top: 2px; }
+        .grid-cell .cell-status-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; }
+        .grid-cell .cell-coord { position: absolute; top: 4px; right: 6px; font-size: 9px; color: #475569; }
+        .grid-cell.drop-target { border-color: #f59e0b !important; background: #1c1a0a !important; }
+
+        #canvas-view { display: none; position: relative; width: 800px; height: 600px; }
+        #canvas-svg { width: 100%; height: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 8px; }
+
+        .detail-panel {
+            width: 260px;
+            background: #1e293b;
+            border-left: 1px solid #334155;
+            display: flex;
+            flex-direction: column;
+            flex-shrink: 0;
+        }
+
+        .detail-header {
+            padding: 12px 14px;
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 1px;
+            color: #64748b;
+            border-bottom: 1px solid #334155;
+        }
+
+        .detail-body { padding: 14px; font-size: 12px; }
+        .detail-row { margin-bottom: 10px; }
+        .detail-row label { display: block; font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+        .detail-row span { color: #e2e8f0; font-weight: 500; }
+        .detail-empty { color: #475569; font-size: 12px; }
+
+        .detail-actions { padding: 14px; border-top: 1px solid #334155; display: flex; flex-direction: column; gap: 6px; }
+
+        .merge-suggestions { padding: 0 14px 10px; display: flex; flex-direction: column; gap: 6px; }
+        .merge-suggestions .btn { text-align: left; }
+
+        .legend { padding: 10px 14px; border-top: 1px solid #334155; margin-top: auto; }
+        .legend-title { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
+        .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
+        .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+
+        .alert-bar { padding: 8px 20px; font-size: 12px; flex-shrink: 0; }
+    </style>
+</head>
+<body>
+
+    @* ── Top Bar ── *@
+    <div class="top-bar">
+        <div>
+            <div style="font-weight:600; font-size:15px;">@Model.ProjectName</div>
+            <div class="jurisdiction">
+                <span>@Model.District</span> &rsaquo;
+                <span>@Model.Taluka</span> &rsaquo;
+                <span>@Model.Village</span>
+            </div>
+        </div>
+        <div class="actions">
+            <a href="@Url.Action("Upload","Sheets", new { projectId = Model.ProjectID })"
+               class="btn btn-sm btn-outline-info">+ Upload Sheet</a>
+               <a href="@Url.Action("Export","Sheets", new { projectId = Model.ProjectID })"
+                class="btn btn-sm btn-outline-success">⬇ Export DXF</a>
+            <a href="@Url.Action("Index","Projects")"
+               class="btn btn-sm btn-outline-secondary">← Projects</a>
+
+        </div>
+    </div>
+
+    @* ── Alerts ── *@
+    @if (TempData["Success"] != null)
+    {
+        <div class="alert-bar">
+            <div class="alert alert-success alert-dismissible mb-0 py-2" role="alert">
+                @TempData["Success"]
+                <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button>
+            </div>
+        </div>
+    }
+    @if (TempData["Error"] != null)
+    {
+        <div class="alert-bar">
+            <div class="alert alert-danger alert-dismissible mb-0 py-2" role="alert">
+                @TempData["Error"]
+                <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button>
+            </div>
+        </div>
+    }
+
+    @* ── Main Layout ── *@
+    <div class="workspace-layout">
+
+        @* ── Left Sidebar ── *@
+        <div class="sidebar">
+            <div class="sidebar-header">Sheets (@Model.Sheets.Count)</div>
+
+            @foreach (var sheet in Model.Sheets.OrderBy(s => s.SheetNumber))
+            {
+                bool isPlaced = sheet.GridRow.HasValue && sheet.GridCol.HasValue;
+                string statusCol = statusColor.GetValueOrDefault(sheet.Status.ToString(), "#94a3b8");
+
+                <div class="sidebar-sheet @(isPlaced ? "placed" : "unplaced")"
+                     onclick="selectSheet(@sheet.SheetID)"
+                     draggable="true"
+                     ondragstart="dragStart(event, @sheet.SheetID)"
+                     data-sheet-id="@sheet.SheetID"
+                     data-sheet-num="@sheet.SheetNumber"
+                     data-laghu="@(sheet.LaghuReferenceNumber ?? "—")"
+                     data-status="@sheet.Status"
+                     data-row="@(sheet.GridRow?.ToString() ?? "")"
+                     data-col="@(sheet.GridCol?.ToString() ?? "")">
+                    <button type="button" class="sidebar-remove-btn" title="Remove sheet"
+                            onclick="event.stopPropagation(); removeSheet(@sheet.SheetID, '@sheet.SheetNumber')">✕</button>
+                    <div class="sheet-num">Sheet @sheet.SheetNumber</div>
+                    <div class="sheet-status" style="color:@statusCol">
+                        ● @sheet.Status @(isPlaced ? $"({sheet.GridRow},{sheet.GridCol})" : "(unplaced)")
+                    </div>
+                </div>
+            }
+
+            <div class="sidebar-upload">
+                <a href="@Url.Action("Upload","Sheets", new { projectId = Model.ProjectID })"
+                   class="btn btn-sm btn-outline-info w-100">+ Upload Sheet</a>
+            </div>
+        </div>
+
+        @* ── Center Canvas ── *@
+        <div class="canvas-area">
+            <div class="canvas-toolbar">
+                <div class="view-toggle">
+                    <button id="btn-grid" class="active" onclick="switchView('grid')">Grid View</button>
+                    <button id="btn-canvas" onclick="switchView('canvas')">Canvas View</button>
+                </div>
+                <span id="toolbar-info" style="margin-left:auto;">
+                    @Model.Sheets.Count(s => s.GridRow.HasValue) / @Model.Sheets.Count placed
+                </span>
+            </div>
+
+            <div class="canvas-scroll">
+
+                @* ── Level 1: Grid View ── *@
+                <div id="grid-view">
+                    @for (int r = 0; r < gridRows; r++)
+                    {
+                        @for (int c = 0; c < gridCols; c++)
+                        {
+                            var sheet = Model.GetSheetAt(r, c);
+                            if (sheet != null)
+                            {
+                                string statusCol = statusColor.GetValueOrDefault(sheet.Status.ToString(), "#94a3b8");
+                                <div class="grid-cell filled"
+                                     onclick="selectSheet(@sheet.SheetID)"
+                                     title="Sheet @sheet.SheetNumber">
+                                    <div class="cell-coord">@r,@c</div>
+                                    <div class="cell-label">@sheet.SheetNumber</div>
+                                    <div class="cell-ref">@(sheet.LaghuReferenceNumber ?? "—")</div>
+                                    <div class="cell-status-dot" style="background:@statusCol"></div>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="grid-cell empty"
+                                     ondragover="allowDrop(event)"
+                                     ondrop="dropSheet(event, @r, @c)"
+                                     onclick="promptManualPlace(@r, @c)"
+                                     title="Empty — drop sheet here">
+                                    <div class="cell-coord">@r,@c</div>
+                                    <div style="font-size:22px; color:#334155;">+</div>
+                                    <div style="font-size:10px; margin-top:4px;">Drop or click</div>
+                                </div>
+                            }
+                        }
+                    }
+                </div>
+
+                @* ── Level 2: Canvas View ── *@
+                <div id="canvas-view">
+                    <svg id="canvas-svg">
+                        @foreach (var sheet in Model.Sheets.Where(s => s.GridRow.HasValue && s.GridCol.HasValue))
+                        {
+                            double svgX = 40 + sheet.GridCol!.Value * 190.0;
+                            double svgY = 40 + sheet.GridRow!.Value * 145.0;
+                            double w = 170;
+                            double h = 125;
+
+                            string statusCol = statusColor.GetValueOrDefault(sheet.Status.ToString(), "#94a3b8");
+
+                            <g class="sheet-polygon" onclick="selectSheet(@sheet.SheetID)" style="cursor:pointer">
+                                <rect x="@svgX" y="@svgY" width="@w" height="@h"
+                                      rx="4" ry="4"
+                                      fill="#1e3a5f" stroke="@statusCol" stroke-width="2"
+                                      opacity="0.85" />
+                                <text x="@(svgX + w/2)" y="@(svgY + h/2 - 8)"
+                                      text-anchor="middle" fill="#38bdf8"
+                                      font-size="13" font-weight="bold">@sheet.SheetNumber</text>
+                                <text x="@(svgX + w/2)" y="@(svgY + h/2 + 10)"
+                                      text-anchor="middle" fill="#94a3b8"
+                                      font-size="10">@(sheet.LaghuReferenceNumber ?? "—")</text>
+                                <circle cx="@(svgX + w - 12)" cy="@(svgY + 12)"
+                                        r="5" fill="@statusCol" />
+                            </g>
+                        }
+                    </svg>
+                </div>
+
+            </div>
+        </div>
+
+        @* ── Right Detail Panel ── *@
+        <div class="detail-panel">
+            <div class="detail-header">Sheet Details</div>
+            <div class="detail-body" id="detail-body">
+                <div class="detail-empty">Select a sheet to view details.</div>
+            </div>
+
+            <div class="merge-suggestions" id="merge-suggestions"></div>
+
+            <div class="detail-actions" id="detail-actions" style="display:none">
+                <a id="btn-georeference" href="#" class="btn btn-sm btn-outline-warning">Georeference</a>
+                <form method="post" id="form-parse">
+                    @Html.AntiForgeryToken()
+                    <input type="hidden" name="sheetId" id="parse-sheet-id" />
+                    <button type="submit"
+                            formaction="@Url.Action("Parse","Sheets")"
+                            class="btn btn-sm btn-outline-info w-100">Re-Parse</button>
+                </form>
+                <button type="button" class="btn btn-sm btn-outline-danger w-100" id="btn-remove-detail"
+                        onclick="removeSelectedSheet()">Remove Sheet</button>
+            </div>
+
+            @* Legend *@
+            <div class="legend">
+                <div class="legend-title">Legend</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#94a3b8"></div>Uploaded</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#3b82f6"></div>Parsed</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div>Georeferenced</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#22c55e"></div>Merged</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#ef4444"></div>Failed</div>
+            </div>
+        </div>
+
+    </div>
+
+    @* ── Manual Place Modal ── *@
+    <div class="modal fade" id="manualPlaceModal" tabindex="-1">
+        <div class="modal-dialog modal-sm">
+            <div class="modal-content bg-dark text-light border-secondary">
+                <div class="modal-header border-secondary py-2">
+                    <h6 class="modal-title">Place Sheet Manually</h6>
+                    <button type="button" class="btn-close btn-close-white btn-sm" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-secondary" style="font-size:12px">
+                        Target cell: <strong id="target-cell-label"></strong>
+                    </p>
+                    <form method="post" action="@Url.Action("PlaceSheet","Sheets")">
+                        @Html.AntiForgeryToken()
+                        <input type="hidden" name="sheetId"  id="manual-sheet-id" />
+                        <input type="hidden" name="gridRow"  id="manual-row" />
+                        <input type="hidden" name="gridCol"  id="manual-col" />
+                        <div class="mb-2">
+                            <label class="form-label" style="font-size:12px">Select Sheet</label>
+                            <select name="sheetId" id="manual-sheet-select" class="form-select form-select-sm bg-dark text-light border-secondary">
+                                @foreach (var s in Model.UnplacedSheets)
+                                {
+                                    <option value="@s.SheetID">Sheet @s.SheetNumber (@s.Status)</option>
+                                }
+                            </select>
+                        </div>
+                        <button type="submit" class="btn btn-sm btn-primary w-100">Place Here</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    @* ── Remove Sheet Form (hidden, submitted via JS) ── *@
+    <form method="post" id="form-remove" action="@Url.Action("RemoveSheet","Sheets")">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="sheetId" id="remove-sheet-id" />
+    </form>
+
+    @* ── Merge Form (hidden, submitted via JS) ── *@
+    <form method="post" id="form-merge" action="@Url.Action("Merge","Sheets")">
+        <input type="hidden" name="baseSheetId" id="merge-base-id" />
+        <input type="hidden" name="adjacentSheetId" id="merge-adjacent-id" />
+    </form>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        const sheets = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
+            Model.Sheets.Select(s => new {
+                s.SheetID,
+                s.SheetNumber,
+                LaghuRef = s.LaghuReferenceNumber ?? "—",
+                Status   = s.Status.ToString(),
+                GridRow  = s.GridRow,
+                GridCol  = s.GridCol
+            })
+        ));
+
+        let selectedSheetId = null;
+        let draggedSheetId  = null;
+
+        function switchView(mode) {
+            document.getElementById('grid-view').style.display   = mode === 'grid'   ? 'grid' : 'none';
+            document.getElementById('canvas-view').style.display = mode === 'canvas' ? 'block' : 'none';
+            document.getElementById('btn-grid').classList.toggle('active',   mode === 'grid');
+            document.getElementById('btn-canvas').classList.toggle('active', mode === 'canvas');
+        }
+
+        // ── Sheet Selection → Detail Panel + Merge Suggestions ──
+        function selectSheet(sheetId) {
+            selectedSheetId = sheetId;
+            const s = sheets.find(x => x.SheetID === sheetId);
+            if (!s) return;
+
+            document.getElementById('detail-body').innerHTML = `
+                <div class="detail-row"><label>Sheet Number</label><span>${s.SheetNumber}</span></div>
+                <div class="detail-row"><label>Laghu Ref</label><span>${s.LaghuRef}</span></div>
+                <div class="detail-row"><label>Status</label><span>${s.Status}</span></div>
+                <div class="detail-row"><label>Grid Position</label>
+                    <span>${s.GridRow !== null ? '(' + s.GridRow + ', ' + s.GridCol + ')' : 'Unplaced'}</span>
+                </div>
+            `;
+
+            document.getElementById('parse-sheet-id').value = sheetId;
+            document.getElementById('btn-georeference').href =
+                '@Url.Action("Georeference","Sheets")?sheetId=' + sheetId;
+            document.getElementById('detail-actions').style.display = 'flex';
+
+            renderMergeSuggestions(s);
+        }
+
+        // Show a "Merge with Sheet X" button for every grid-adjacent placed sheet.
+        // No completeness requirement — works with however many sheets exist.
+        function renderMergeSuggestions(sheet) {
+            const container = document.getElementById('merge-suggestions');
+            container.innerHTML = '';
+
+            if (sheet.GridRow === null || sheet.GridCol === null) return;
+
+            const neighborOffsets = [
+                { dr: -1, dc: 0, label: 'North' },
+                { dr: 1,  dc: 0, label: 'South' },
+                { dr: 0,  dc: -1, label: 'West' },
+                { dr: 0,  dc: 1,  label: 'East' }
+            ];
+
+            neighborOffsets.forEach(off => {
+                const neighbor = sheets.find(x =>
+                    x.GridRow === sheet.GridRow + off.dr &&
+                    x.GridCol === sheet.GridCol + off.dc);
+
+                if (!neighbor) return;
+
+                const btn = document.createElement('button');
+                btn.className = 'btn btn-sm btn-success w-100';
+                btn.textContent = `Merge with Sheet ${neighbor.SheetNumber} (${off.label})`;
+                btn.onclick = () => triggerMerge(sheet.SheetID, neighbor.SheetID);
+                container.appendChild(btn);
+            });
+        }
+
+        function triggerMerge(baseSheetId, adjacentSheetId) {
+            document.getElementById('merge-base-id').value = baseSheetId;
+            document.getElementById('merge-adjacent-id').value = adjacentSheetId;
+            document.getElementById('form-merge').submit();
+        }
+
+        // ── Remove Sheet ──
+        function removeSheet(sheetId, sheetNumber) {
+            if (!confirm(`Remove Sheet ${sheetNumber}? This deletes its file and all tie points. This cannot be undone.`)) {
+                return;
+            }
+            document.getElementById('remove-sheet-id').value = sheetId;
+            document.getElementById('form-remove').submit();
+        }
+
+        function removeSelectedSheet() {
+            if (!selectedSheetId) return;
+            const s = sheets.find(x => x.SheetID === selectedSheetId);
+            removeSheet(selectedSheetId, s ? s.SheetNumber : selectedSheetId);
+        }
+
+        // ── Drag and Drop ──
+        function dragStart(event, sheetId) {
+            draggedSheetId = sheetId;
+            event.dataTransfer.effectAllowed = 'move';
+        }
+
+        function allowDrop(event) {
+            event.preventDefault();
+            event.currentTarget.classList.add('drop-target');
+        }
+
+        function dropSheet(event, row, col) {
+            event.preventDefault();
+            event.currentTarget.classList.remove('drop-target');
+
+            if (!draggedSheetId) return;
+
+            const form = new FormData();
+            form.append('sheetId',  draggedSheetId);
+            form.append('gridRow',  row);
+            form.append('gridCol',  col);
+            form.append('__RequestVerificationToken',
+                document.querySelector('#form-remove input[name="__RequestVerificationToken"]').value);
+
+            fetch('@Url.Action("PlaceSheet","Sheets")', { method: 'POST', body: form })
+                .then(() => location.reload());
+        }
+
+        function promptManualPlace(row, col) {
+            if (@Model.UnplacedSheets.Count === 0) return;
+            document.getElementById('target-cell-label').textContent = `(${row}, ${col})`;
+            document.getElementById('manual-row').value = row;
+            document.getElementById('manual-col').value = col;
+            new bootstrap.Modal(document.getElementById('manualPlaceModal')).show();
+        }
+
+        document.querySelectorAll('.grid-cell.empty').forEach(cell => {
+            cell.addEventListener('dragleave', () => cell.classList.remove('drop-target'));
+        });
+    </script>
+</body>
+</html>

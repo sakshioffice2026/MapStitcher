@@ -1,0 +1,191 @@
+@* Views/Projects/Create.cshtml *@
+@{
+    ViewData["Title"] = "New Project";
+}
+
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card shadow-sm">
+            <div class="card-header bg-primary text-white">
+                <h5 class="mb-0">New Cadastral Project</h5>
+            </div>
+            <div class="card-body">
+
+                <form method="post" asp-controller="Projects" asp-action="Create">
+                    @Html.AntiForgeryToken()
+
+                    @* Project Name *@
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Project Name <span class="text-danger">*</span></label>
+                        <input type="text" name="name" class="form-control" placeholder="e.g. Pune Rural Survey 2024" required />
+                        <span class="text-danger small">@Html.ValidationMessage("name")</span>
+                    </div>
+
+                    @* District *@
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">District (जिल्हा) <span class="text-danger">*</span></label>
+                        <input type="text" name="district" class="form-control" list="district-list"
+                               placeholder="Select or type district" required autocomplete="off" />
+                        <span class="text-danger small">@Html.ValidationMessage("district")</span>
+                        <datalist id="district-list">
+                            <option value="Ahmednagar" />
+                            <option value="Akola" />
+                            <option value="Amravati" />
+                            <option value="Aurangabad" />
+                            <option value="Beed" />
+                            <option value="Bhandara" />
+                            <option value="Buldhana" />
+                            <option value="Chandrapur" />
+                            <option value="Dhule" />
+                            <option value="Gadchiroli" />
+                            <option value="Gondia" />
+                            <option value="Hingoli" />
+                            <option value="Jalgaon" />
+                            <option value="Jalna" />
+                            <option value="Kolhapur" />
+                            <option value="Latur" />
+                            <option value="Mumbai City" />
+                            <option value="Mumbai Suburban" />
+                            <option value="Nagpur" />
+                            <option value="Nanded" />
+                            <option value="Nandurbar" />
+                            <option value="Nashik" />
+                            <option value="Osmanabad" />
+                            <option value="Palghar" />
+                            <option value="Parbhani" />
+                            <option value="Pune" />
+                            <option value="Raigad" />
+                            <option value="Ratnagiri" />
+                            <option value="Sangli" />
+                            <option value="Satara" />
+                            <option value="Sindhudurg" />
+                            <option value="Solapur" />
+                            <option value="Thane" />
+                            <option value="Wardha" />
+                            <option value="Washim" />
+                            <option value="Yavatmal" />
+                        </datalist>
+                    </div>
+
+                    @* Taluka *@
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Taluka (तालुका) <span class="text-danger">*</span></label>
+                        <input type="text" name="taluka" class="form-control" list="taluka-list"
+                               placeholder="Select or type taluka" required autocomplete="off" />
+                        <span class="text-danger small">@Html.ValidationMessage("taluka")</span>
+                        <datalist id="taluka-list">
+                            @* Pune *@
+                            <option value="Haveli" />
+                            <option value="Pune City" />
+                            <option value="Khed" />
+                            <option value="Junnar" />
+                            <option value="Ambegaon" />
+                            <option value="Maval" />
+                            <option value="Mulshi" />
+                            <option value="Shirur" />
+                            <option value="Bhor" />
+                            <option value="Velhe" />
+                            <option value="Purandar" />
+                            <option value="Baramati" />
+                            <option value="Indapur" />
+                            <option value="Daund" />
+                            @* Nashik *@
+                            <option value="Nashik" />
+                            <option value="Niphad" />
+                            <option value="Sinnar" />
+                            <option value="Igatpuri" />
+                            <option value="Dindori" />
+                            <option value="Peint" />
+                            <option value="Surgana" />
+                            <option value="Kalwan" />
+                            <option value="Deola" />
+                            <option value="Malegaon" />
+                            <option value="Nandgaon" />
+                            <option value="Chandwad" />
+                            <option value="Yeola" />
+                            <option value="Baglan" />
+                            <option value="Trimbakeshwar" />
+                            @* Nagpur *@
+                            <option value="Nagpur Rural" />
+                            <option value="Nagpur Urban" />
+                            <option value="Hingna" />
+                            <option value="Kamptee" />
+                            <option value="Katol" />
+                            <option value="Narkhed" />
+                            <option value="Savner" />
+                            <option value="Parseoni" />
+                            <option value="Ramtek" />
+                            <option value="Mouda" />
+                            <option value="Umred" />
+                            <option value="Bhiwapur" />
+                            <option value="Kuhi" />
+                            @* Kolhapur *@
+                            <option value="Karvir" />
+                            <option value="Panhala" />
+                            <option value="Hatkanangle" />
+                            <option value="Shirol" />
+                            <option value="Kagal" />
+                            <option value="Gadhinglaj" />
+                            <option value="Chandgad" />
+                            <option value="Ajra" />
+                            <option value="Bhudargad" />
+                            <option value="Radhanagari" />
+                            <option value="Bavda" />
+                            <option value="Shahuwadi" />
+                            @* Aurangabad *@
+                            <option value="Aurangabad" />
+                            <option value="Paithan" />
+                            <option value="Gangapur" />
+                            <option value="Vaijapur" />
+                            <option value="Kannad" />
+                            <option value="Soegaon" />
+                            <option value="Sillod" />
+                            <option value="Phulambri" />
+                            <option value="Khuldabad" />
+                            @* Solapur *@
+                            <option value="Solapur North" />
+                            <option value="Solapur South" />
+                            <option value="Akkalkot" />
+                            <option value="Barshi" />
+                            <option value="Karmala" />
+                            <option value="Madha" />
+                            <option value="Malshiras" />
+                            <option value="Mangalvedhe" />
+                            <option value="Mohol" />
+                            <option value="North Solapur" />
+                            <option value="Pandharpur" />
+                            <option value="Sangola" />
+                            @* Satara *@
+                            <option value="Satara" />
+                            <option value="Karad" />
+                            <option value="Patan" />
+                            <option value="Wai" />
+                            <option value="Mahabaleshwar" />
+                            <option value="Phaltan" />
+                            <option value="Khandala" />
+                            <option value="Koregaon" />
+                            <option value="Man" />
+                            <option value="Khatav" />
+                            <option value="Jaoli" />
+                        </datalist>
+                    </div>
+
+                    @* Village *@
+                    <div class="mb-3">
+                        <label class="form-label fw-semibold">Village (गाव) <span class="text-danger">*</span></label>
+                        <input type="text" name="village" class="form-control"
+                               placeholder="Enter village name" required />
+                        <span class="text-danger small">@Html.ValidationMessage("village")</span>
+                    </div>
+
+                    <div class="d-flex gap-2 mt-4">
+                        <button type="submit" class="btn btn-primary">Create Project</button>
+                        <a asp-controller="Projects" asp-action="Index" class="btn btn-outline-secondary">Cancel</a>
+                    </div>
+
+                </form>
+
+            </div>
+        </div>
+    </div>
+</div>
