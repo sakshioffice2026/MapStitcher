@@ -1,20 +1,21 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
-  <PropertyGroup>
-    <TargetFramework>net8.0</TargetFramework>
-    <ImplicitUsings>enable</ImplicitUsings>
-    <Nullable>enable</Nullable>
-  </PropertyGroup>
+	<PropertyGroup>
+		<TargetFramework>net8.0</TargetFramework>
+		<ImplicitUsings>enable</ImplicitUsings>
+		<Nullable>enable</Nullable>
+	</PropertyGroup>
 
-  <ItemGroup>
-	  <PackageReference Include="ACadSharp" Version="3.7.1" />
-    <PackageReference Include="NetTopologySuite" Version="2.6.0" />
-	  <PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
-  </ItemGroup>
+	<ItemGroup>
+		<PackageReference Include="ACadSharp" Version="3.7.1" />
+		<PackageReference Include="NetTopologySuite" Version="2.6.0" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.0" />
+	</ItemGroup>
 
-  <ItemGroup>
-    <ProjectReference Include="..\MapStitcher.Database\MapStitcher.Database.csproj" />
-    <ProjectReference Include="..\MapStitcher.Repositories\MapStitcher.Repositories.csproj" />
-  </ItemGroup>
+	<ItemGroup>
+		<ProjectReference Include="..\MapStitcher.Database\MapStitcher.Database.csproj" />
+		<ProjectReference Include="..\MapStitcher.Repositories\MapStitcher.Repositories.csproj" />
+		<ProjectReference Include="..\MapStitcher.Utilities\MapStitcher.Utilities.csproj" />
+	</ItemGroup>
 
 </Project>

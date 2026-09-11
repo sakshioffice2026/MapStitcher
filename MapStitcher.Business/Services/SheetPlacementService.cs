@@ -4,106 +4,66 @@ using MapStitcher.Repositories.Contracts;
 
 namespace MapStitcher.Business.Services
 {
+    // Placement strategy: pure Laghu Reference index chaining.
+    // No reliable tie-point labels or georeference data are available, so grid
+    // adjacency is derived solely from LaghuReferenceNumber <-> SheetNumber links.
+    // A linked sheet is dropped into the first open cell (E, S, W, N order)
+    // around its linked, already-placed neighbor — direction has no real-world
+    // meaning here since no spatial source data exists; it only keeps sheets
+    // visually adjacent on the jigsaw grid.
     public class SheetPlacementService : ISheetPlacementService
     {
-        private readonly ISurveySheetRepository _sheetRepo;
-        private readonly ITiePointRepository _tiePointRepo;
+        private static readonly (int dRow, int dCol)[] AdjacencyOffsets =
+        {
+            (0, 1),   // East
+            (1, 0),   // South
+            (0, -1),  // West
+            (-1, 0),  // North
+        };
 
-        public SheetPlacementService(
-            ISurveySheetRepository sheetRepo,
-            ITiePointRepository tiePointRepo)
+        private readonly ISurveySheetRepository _sheetRepo;
+
+        public SheetPlacementService(ISurveySheetRepository sheetRepo)
         {
             _sheetRepo = sheetRepo;
-            _tiePointRepo = tiePointRepo;
         }
 
-        // Auto placement: finds grid position by matching TiePoint labels
-        // with already-placed sheets in the same project.
         public async Task<PlacementResult> AutoPlaceSheetAsync(int sheetId)
         {
             var sheet = await _sheetRepo.GetByIdAsync(sheetId);
             if (sheet == null)
                 return Fail(sheetId, "Sheet not found.");
 
-            var incomingPoints = await _tiePointRepo.GetBySheetIdAsync(sheetId);
-            var labeledPoints = incomingPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
-
-            if (!labeledPoints.Any())
-                return Fail(sheetId, "No labeled tie points found. Run parsing first or use manual placement.");
-
-            var placedSheets = await _sheetRepo.GetByProjectIdAsync(sheet.ProjectID);
-            var placedAndPositioned = placedSheets
+            var siblings = await _sheetRepo.GetByProjectIdAsync(sheet.ProjectID);
+            var placedSheets = siblings
                 .Where(s => s.SheetID != sheetId && s.GridRow.HasValue && s.GridCol.HasValue)
                 .ToList();
 
-            if (!placedAndPositioned.Any())
+            if (!placedSheets.Any())
             {
                 // First sheet in project — anchor at origin (0,0)
                 return await CommitPlacement(sheet, 0, 0, PlacementMode.Auto);
             }
 
-            // For each already-placed sheet, check for shared TiePoint labels
-            foreach (var placedSheet in placedAndPositioned)
-            {
-                var placedPoints = await _tiePointRepo.GetBySheetIdAsync(placedSheet.SheetID);
-                var sharedLabels = labeledPoints
-                    .Select(p => p.PointLabel)
-                    .Intersect(placedPoints
-                        .Where(p => !string.IsNullOrWhiteSpace(p.PointLabel))
-                        .Select(p => p.PointLabel))
-                    .ToList();
+            var linkedSheet = FindLaghuLinkedSheet(sheet, placedSheets);
+            if (linkedSheet == null)
+                return Fail(sheetId, "No Laghu Reference link found to any placed sheet. Use manual placement.");
 
-                if (!sharedLabels.Any())
-                    continue;
+            var openCell = FindFirstOpenAdjacentCell(linkedSheet, placedSheets);
+            if (openCell == null)
+                return Fail(sheetId, $"All grid cells around linked sheet {linkedSheet.SheetNumber} are occupied. Use manual placement.");
 
-                // Determine spatial direction based on centroid offset
-                double incomingCentroidX = labeledPoints.Average(p => p.SourceX);
-                double incomingCentroidY = labeledPoints.Average(p => p.SourceY);
-
-                var sharedPlacedPoints = placedPoints
-                    .Where(p => sharedLabels.Contains(p.PointLabel))
-                    .ToList();
-
-                double placedCentroidX = sharedPlacedPoints.Average(p => p.SourceX);
-                double placedCentroidY = sharedPlacedPoints.Average(p => p.SourceY);
-
-                double dx = incomingCentroidX - placedCentroidX;
-                double dy = incomingCentroidY - placedCentroidY;
-
-                int targetRow = placedSheet.GridRow!.Value;
-                int targetCol = placedSheet.GridCol!.Value;
-
-                // Determine neighbor direction from centroid delta
-                if (Math.Abs(dx) >= Math.Abs(dy))
-                    targetCol += dx > 0 ? 1 : -1;  // East or West
-                else
-                    targetRow += dy > 0 ? -1 : 1;  // North or South (Y-axis inverted for grid)
-
-                // Collision check — if target cell is occupied, skip this neighbor
-                bool occupied = placedAndPositioned.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
-                if (occupied)
-                    continue;
-
-                return await CommitPlacement(sheet, targetRow, targetCol, PlacementMode.Auto);
-            }
-
-            return Fail(sheetId, "Could not determine grid position from shared tie points. Use manual placement.");
+            return await CommitPlacement(sheet, openCell.Value.row, openCell.Value.col, PlacementMode.Auto);
         }
 
-        // Returns every valid empty neighbor cell for this sheet, based on shared tie point
-        // labels with already-placed sheets. Used by the UI to highlight "Connect Here" cells
-        // when a sheet card is selected — no directional (N/S/E/W) language involved.
+        // Returns every open grid cell adjacent to a Laghu-linked, already-placed
+        // sheet, for "Connect Here" highlighting in the UI.
         public async Task<List<OpenSlot>> GetOpenTargetSlotsAsync(int sheetId)
         {
             var slots = new List<OpenSlot>();
 
             var sheet = await _sheetRepo.GetByIdAsync(sheetId);
             if (sheet == null)
-                return slots;
-
-            var incomingPoints = await _tiePointRepo.GetBySheetIdAsync(sheetId);
-            var labeledPoints = incomingPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
-            if (!labeledPoints.Any())
                 return slots;
 
             var placedSheets = (await _sheetRepo.GetByProjectIdAsync(sheet.ProjectID))
@@ -113,39 +73,14 @@ namespace MapStitcher.Business.Services
             if (!placedSheets.Any())
                 return slots; // Nothing placed yet — this would anchor at (0,0), not a "connect" case.
 
-            foreach (var placedSheet in placedSheets)
+            var linkedSheet = FindLaghuLinkedSheet(sheet, placedSheets);
+            if (linkedSheet == null)
+                return slots;
+
+            foreach (var (dRow, dCol) in AdjacencyOffsets)
             {
-                var placedPoints = await _tiePointRepo.GetBySheetIdAsync(placedSheet.SheetID);
-                var sharedLabels = labeledPoints
-                    .Select(p => p.PointLabel)
-                    .Intersect(placedPoints
-                        .Where(p => !string.IsNullOrWhiteSpace(p.PointLabel))
-                        .Select(p => p.PointLabel))
-                    .ToList();
-
-                if (!sharedLabels.Any())
-                    continue;
-
-                double incomingCentroidX = labeledPoints.Average(p => p.SourceX);
-                double incomingCentroidY = labeledPoints.Average(p => p.SourceY);
-
-                var sharedPlacedPoints = placedPoints
-                    .Where(p => sharedLabels.Contains(p.PointLabel))
-                    .ToList();
-
-                double placedCentroidX = sharedPlacedPoints.Average(p => p.SourceX);
-                double placedCentroidY = sharedPlacedPoints.Average(p => p.SourceY);
-
-                double dx = incomingCentroidX - placedCentroidX;
-                double dy = incomingCentroidY - placedCentroidY;
-
-                int targetRow = placedSheet.GridRow!.Value;
-                int targetCol = placedSheet.GridCol!.Value;
-
-                if (Math.Abs(dx) >= Math.Abs(dy))
-                    targetCol += dx > 0 ? 1 : -1;
-                else
-                    targetRow += dy > 0 ? -1 : 1;
+                int targetRow = linkedSheet.GridRow!.Value + dRow;
+                int targetCol = linkedSheet.GridCol!.Value + dCol;
 
                 bool occupied = placedSheets.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
                 bool alreadyListed = slots.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
@@ -171,6 +106,29 @@ namespace MapStitcher.Business.Services
                 return Fail(sheetId, $"Grid cell ({gridRow},{gridCol}) is already occupied by another sheet.");
 
             return await CommitPlacement(sheet, gridRow, gridCol, PlacementMode.Manual);
+        }
+
+        // A link exists when either sheet's LaghuReferenceNumber equals the other's SheetNumber.
+        private static SurveySheet? FindLaghuLinkedSheet(SurveySheet sheet, List<SurveySheet> placedSheets)
+        {
+            return placedSheets.FirstOrDefault(placed =>
+                (!string.IsNullOrWhiteSpace(sheet.LaghuReferenceNumber) && sheet.LaghuReferenceNumber == placed.SheetNumber) ||
+                (!string.IsNullOrWhiteSpace(placed.LaghuReferenceNumber) && placed.LaghuReferenceNumber == sheet.SheetNumber));
+        }
+
+        private static (int row, int col)? FindFirstOpenAdjacentCell(SurveySheet anchor, List<SurveySheet> placedSheets)
+        {
+            foreach (var (dRow, dCol) in AdjacencyOffsets)
+            {
+                int row = anchor.GridRow!.Value + dRow;
+                int col = anchor.GridCol!.Value + dCol;
+
+                bool occupied = placedSheets.Any(s => s.GridRow == row && s.GridCol == col);
+                if (!occupied)
+                    return (row, col);
+            }
+
+            return null;
         }
 
         private async Task<PlacementResult> CommitPlacement(SurveySheet sheet, int row, int col, PlacementMode mode)

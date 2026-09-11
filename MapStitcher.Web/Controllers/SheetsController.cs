@@ -210,6 +210,33 @@ namespace MapStitcher.Web.Controllers
             return RedirectToAction("Workspace", new { projectId = sheet.ProjectID });
         }
 
+        // Debug-only: returns raw, undecoded TEXT/MTEXT values from a sheet's CAD
+        // file as JSON, so exact Sakal Bharati raw sequences can be extracted and
+        // for verifying layer names and DxfUnicodeEscapeDecoder output. Not part of the parse/merge pipeline.
+        [HttpGet]
+        public async Task<IActionResult> DebugRawText(int sheetId)
+        {
+            var sheet = await _sheetRepo.GetByIdAsync(sheetId);
+            if (sheet == null)
+                return NotFound("Sheet not found.");
+
+            try
+            {
+                var entries = await _parsingService.DumpRawTextAsync(sheetId);
+                return Json(new
+                {
+                    sheetId,
+                    sheet.SheetNumber,
+                    entryCount = entries.Count,
+                    entries
+                });
+            }
+            catch (Exception ex)
+            {
+                return StatusCode(500, $"Raw text dump failed: {ex.Message}");
+            }
+        }
+
         [HttpPost]
         public async Task<IActionResult> StitchAll(int projectId)
         {
