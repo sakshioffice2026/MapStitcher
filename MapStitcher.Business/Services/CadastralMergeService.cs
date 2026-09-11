@@ -1,18 +1,22 @@
-﻿// Services/CadastralMergeService.cs — full file
+﻿// Services/CadastralMergeService.cs
 using MapStitcher.Business.Contracts;
 using MapStitcher.Database;
 using MapStitcher.Repositories.Contracts;
 
 namespace MapStitcher.Business.Services
 {
-    // Merge strategy: pure Laghu Reference index chaining for the link,
-// with tie-point label matching as the primary pairing method, and a
-// centroid-offset spatial fallback when no labeled pairs are found.
-// This ensures at least a best-effort translation is always computed,
-// preventing sheets from keeping identity transforms and collapsing at origin.
+    // Cadastral merge strategy:
+    // - No Laghu Reference dependency.
+    // - No PointLabel dependency.
+    // - Detect the shared sheet edge from XY bounds.
+    // - Match boundary tie points by their perpendicular coordinate.
+    // - Compute translation from the opposing edge bounds and the matched
+    //   perpendicular-coordinate offset.
     public class CadastralMergeService : ICadastralMergeService
     {
-        private const double SpatialThreshold = 25.0; // pixels — used for centroid fallback matching
+        private const double EdgeToleranceFraction = 0.05;
+        private const double PointMatchThreshold = 5.0;
+        private const int MinOverlapPoints = 2;
 
         private readonly ITiePointRepository _tiePointRepo;
         private readonly ISurveySheetRepository _sheetRepo;
@@ -33,40 +37,41 @@ namespace MapStitcher.Business.Services
             var adjacentSheet = await _sheetRepo.GetByIdAsync(adjacentSheetId)
                 ?? throw new InvalidOperationException($"Adjacent sheet {adjacentSheetId} not found.");
 
-            string? linkedVia = ResolveLaghuLink(baseSheet, adjacentSheet);
+            var basePoints = await _tiePointRepo.GetBySheetIdAsync(baseSheetId);
+            var adjacentPoints = await _tiePointRepo.GetBySheetIdAsync(adjacentSheetId);
 
-            if (linkedVia == null)
+            if (basePoints.Count == 0 || adjacentPoints.Count == 0)
             {
                 return new MergeResult
                 {
                     Success = false,
                     MatchedPointCount = 0,
-                    Message = $"No Laghu Reference match: base='{baseSheet.LaghuReferenceNumber}', adjacent='{adjacentSheet.LaghuReferenceNumber}'.",
-                    FailureReason = "Needs manual check: Laghu Sheet No. does not match adjacent sheet"
+                    InlierPointCount = 0,
+                    RejectedOutlierCount = 0,
+                    Message = "Cannot merge: both sheets must contain tie points.",
+                    FailureReason = "Insufficient tie points for XY edge matching"
                 };
             }
 
-            var basePoints = await _tiePointRepo.GetBySheetIdAsync(baseSheetId);
-            var adjacentPoints = await _tiePointRepo.GetBySheetIdAsync(adjacentSheetId);
-            var matchedPairs = FindMatchingPairs(basePoints, adjacentPoints);
+            var baseBounds = ComputeBounds(basePoints);
+            var adjacentBounds = ComputeBounds(adjacentPoints);
+            var relationship = FindBestEdgeRelationship(basePoints, adjacentPoints, baseBounds, adjacentBounds);
 
-            double translateX = 0;
-            double translateY = 0;
+            if (relationship == null)
+            {
+                return new MergeResult
+                {
+                    Success = false,
+                    MatchedPointCount = 0,
+                    InlierPointCount = 0,
+                    RejectedOutlierCount = 0,
+                    Message = $"No XY edge relationship found between {baseSheet.SheetNumber} and {adjacentSheet.SheetNumber}.",
+                    FailureReason = "Needs manual check: no matching boundary edge tie points"
+                };
+            }
 
-            // Always compute a best-effort translation:
-            // 1) If labeled pairs matched, use their average offset
-            // 2) Otherwise, fall back to centroid difference of ALL labeled points
-            if (matchedPairs.Count > 0)
-            {
-                translateX = matchedPairs.Average(p => p.BasePoint.SourceX - p.AdjacentPoint.SourceX);
-                translateY = matchedPairs.Average(p => p.BasePoint.SourceY - p.AdjacentPoint.SourceY);
-            }
-            else if (basePoints.Count > 0 && adjacentPoints.Count > 0)
-            {
-                // Centroid fallback: translate so that the two sheets' point clouds align
-                translateX = basePoints.Average(p => p.SourceX) - adjacentPoints.Average(p => p.SourceX);
-                translateY = basePoints.Average(p => p.SourceY) - adjacentPoints.Average(p => p.SourceY);
-            }
+            var translateX = relationship.TranslateX;
+            var translateY = relationship.TranslateY;
 
             foreach (var point in adjacentPoints)
             {
@@ -88,75 +93,185 @@ namespace MapStitcher.Business.Services
             return new MergeResult
             {
                 Success = true,
-                MatchedPointCount = matchedPairs.Count,
-                InlierPointCount = matchedPairs.Count,
-                Message = $"Merged via Laghu Reference chain ({linkedVia}: {baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber}).",
+                RmsErrorMeters = relationship.RmsError,
+                MatchedPointCount = relationship.MatchedPointCount,
+                InlierPointCount = relationship.MatchedPointCount,
+                RejectedOutlierCount = 0,
+                Message = $"Merged via XY {relationship.Direction} edge geometry ({baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber}).",
                 FailureReason = null
             };
         }
 
-        // Returns the matched reference number if either sheet's LaghuReferenceNumber
-        // points to the other sheet's SheetNumber; null if no index link exists.
-        private static string? ResolveLaghuLink(SurveySheet baseSheet, SurveySheet adjacentSheet)
+        private static Bounds ComputeBounds(List<TiePoint> points)
         {
-            if (!string.IsNullOrWhiteSpace(adjacentSheet.LaghuReferenceNumber) &&
-                adjacentSheet.LaghuReferenceNumber == baseSheet.SheetNumber)
-                return adjacentSheet.LaghuReferenceNumber;
-
-            if (!string.IsNullOrWhiteSpace(baseSheet.LaghuReferenceNumber) &&
-                baseSheet.LaghuReferenceNumber == adjacentSheet.SheetNumber)
-                return baseSheet.LaghuReferenceNumber;
-
-            return null;
+            return new Bounds(
+                points.Min(p => p.SourceX),
+                points.Max(p => p.SourceX),
+                points.Min(p => p.SourceY),
+                points.Max(p => p.SourceY));
         }
 
-        private static List<(TiePoint BasePoint, TiePoint AdjacentPoint)> FindMatchingPairs(
-            List<TiePoint> basePoints, List<TiePoint> adjacentPoints)
+        private static List<TiePoint> GetEdgePoints(
+            List<TiePoint> points,
+            Bounds bounds,
+            Edge edge)
         {
-            var pairs = new List<(TiePoint, TiePoint)>();
+            var span = edge is Edge.Left or Edge.Right
+                ? bounds.MaxX - bounds.MinX
+                : bounds.MaxY - bounds.MinY;
 
-            // 1) Primary: exact PointLabel matching
-            foreach (var basePoint in basePoints)
+            var tolerance = Math.Max(span * EdgeToleranceFraction, PointMatchThreshold);
+
+            return edge switch
             {
-                if (string.IsNullOrWhiteSpace(basePoint.PointLabel))
+                Edge.Left => points.Where(p => Math.Abs(p.SourceX - bounds.MinX) <= tolerance).ToList(),
+                Edge.Right => points.Where(p => Math.Abs(p.SourceX - bounds.MaxX) <= tolerance).ToList(),
+                Edge.Bottom => points.Where(p => Math.Abs(p.SourceY - bounds.MinY) <= tolerance).ToList(),
+                Edge.Top => points.Where(p => Math.Abs(p.SourceY - bounds.MaxY) <= tolerance).ToList(),
+                _ => new List<TiePoint>()
+            };
+        }
+
+        private static EdgeRelationship? FindBestEdgeRelationship(
+            List<TiePoint> basePoints,
+            List<TiePoint> adjacentPoints,
+            Bounds baseBounds,
+            Bounds adjacentBounds)
+        {
+            var candidates = new List<EdgeRelationship?>
+            {
+                EvaluateHorizontal(
+                    GetEdgePoints(basePoints, baseBounds, Edge.Right),
+                    GetEdgePoints(adjacentPoints, adjacentBounds, Edge.Left),
+                    baseBounds.MaxX - adjacentBounds.MinX,
+                    "right-left"),
+
+                EvaluateHorizontal(
+                    GetEdgePoints(basePoints, baseBounds, Edge.Left),
+                    GetEdgePoints(adjacentPoints, adjacentBounds, Edge.Right),
+                    baseBounds.MinX - adjacentBounds.MaxX,
+                    "left-right"),
+
+                EvaluateVertical(
+                    GetEdgePoints(basePoints, baseBounds, Edge.Top),
+                    GetEdgePoints(adjacentPoints, adjacentBounds, Edge.Bottom),
+                    baseBounds.MaxY - adjacentBounds.MinY,
+                    "top-bottom"),
+
+                EvaluateVertical(
+                    GetEdgePoints(basePoints, baseBounds, Edge.Bottom),
+                    GetEdgePoints(adjacentPoints, adjacentBounds, Edge.Top),
+                    baseBounds.MinY - adjacentBounds.MaxY,
+                    "bottom-top")
+            };
+
+            return candidates
+                .Where(c => c != null)
+                .OrderByDescending(c => c!.MatchedPointCount)
+                .ThenBy(c => c!.RmsError)
+                .FirstOrDefault();
+        }
+
+        private static EdgeRelationship? EvaluateHorizontal(
+            List<TiePoint> baseEdge,
+            List<TiePoint> adjacentEdge,
+            double translateX,
+            string direction)
+        {
+            var matches = MatchByCoordinate(baseEdge, adjacentEdge, useX: false);
+
+            if (matches.Count < MinOverlapPoints)
+                return null;
+
+            var translateY = matches.Average(m => m.BasePoint.SourceY - m.AdjacentPoint.SourceY);
+            var rms = CalculateRms(matches, translateX, translateY);
+
+            return new EdgeRelationship(direction, translateX, translateY, rms, matches.Count);
+        }
+
+        private static EdgeRelationship? EvaluateVertical(
+            List<TiePoint> baseEdge,
+            List<TiePoint> adjacentEdge,
+            double translateY,
+            string direction)
+        {
+            var matches = MatchByCoordinate(baseEdge, adjacentEdge, useX: true);
+
+            if (matches.Count < MinOverlapPoints)
+                return null;
+
+            var translateX = matches.Average(m => m.BasePoint.SourceX - m.AdjacentPoint.SourceX);
+            var rms = CalculateRms(matches, translateX, translateY);
+
+            return new EdgeRelationship(direction, translateX, translateY, rms, matches.Count);
+        }
+
+        private static List<(TiePoint BasePoint, TiePoint AdjacentPoint)> MatchByCoordinate(
+            List<TiePoint> baseEdge,
+            List<TiePoint> adjacentEdge,
+            bool useX)
+        {
+            var matches = new List<(TiePoint BasePoint, TiePoint AdjacentPoint)>();
+            var usedAdjacent = new HashSet<int>();
+
+            foreach (var basePoint in baseEdge.OrderBy(p => useX ? p.SourceX : p.SourceY))
+            {
+                var candidate = adjacentEdge
+                    .Where(p => !usedAdjacent.Contains(p.PointID))
+                    .Select(p => new
+                    {
+                        Point = p,
+                        Difference = Math.Abs((useX ? p.SourceX : p.SourceY) -
+                                              (useX ? basePoint.SourceX : basePoint.SourceY))
+                    })
+                    .Where(x => x.Difference <= PointMatchThreshold)
+                    .OrderBy(x => x.Difference)
+                    .FirstOrDefault();
+
+                if (candidate == null)
                     continue;
 
-                var match = adjacentPoints.FirstOrDefault(a => a.PointLabel == basePoint.PointLabel);
-                if (match != null)
-                    pairs.Add((basePoint, match));
+                matches.Add((basePoint, candidate.Point));
+                usedAdjacent.Add(candidate.Point.PointID);
             }
 
-            // 2) Spatial fallback: if no labeled pairs matched, match by closest
-            // centroid proximity using the spatial threshold. This ensures at least
-            // some translation is computed even when PointLabels are missing or mismatched.
-            if (pairs.Count == 0)
+            return matches;
+        }
+
+        private static double CalculateRms(
+            List<(TiePoint BasePoint, TiePoint AdjacentPoint)> matches,
+            double translateX,
+            double translateY)
+        {
+            var squaredError = matches.Sum(m =>
             {
-                var labeledBase = basePoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
-                var labeledAdjacent = adjacentPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+                var dx = (m.AdjacentPoint.SourceX + translateX) - m.BasePoint.SourceX;
+                var dy = (m.AdjacentPoint.SourceY + translateY) - m.BasePoint.SourceY;
+                return (dx * dx) + (dy * dy);
+            });
 
-                if (labeledBase.Any() && labeledAdjacent.Any())
-                {
-                    // Try matching each base point to its closest adjacent point within threshold
-                    foreach (var basePoint in labeledBase)
-                    {
-                        var bestMatch = labeledAdjacent
-                            .OrderBy(a => Math.Sqrt(
-                                Math.Pow(a.SourceX - basePoint.SourceX, 2) +
-                                Math.Pow(a.SourceY - basePoint.SourceY, 2)))
-                            .FirstOrDefault();
+            return Math.Sqrt(squaredError / matches.Count);
+        }
 
-                        if (bestMatch != null &&
-                            Math.Sqrt(
-                                Math.Pow(bestMatch.SourceX - basePoint.SourceX, 2) +
-                                Math.Pow(bestMatch.SourceY - basePoint.SourceY, 2)) <= SpatialThreshold)
-                        {
-                            pairs.Add((basePoint, bestMatch));
-                        }
-                    }
-                }
-            }
+        private readonly record struct Bounds(
+            double MinX,
+            double MaxX,
+            double MinY,
+            double MaxY);
 
-            return pairs;
+        private readonly record struct EdgeRelationship(
+            string Direction,
+            double TranslateX,
+            double TranslateY,
+            double RmsError,
+            int MatchedPointCount);
+
+        private enum Edge
+        {
+            Left,
+            Right,
+            Bottom,
+            Top
         }
     }
 }
