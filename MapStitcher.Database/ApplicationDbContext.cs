@@ -37,6 +37,7 @@ namespace MapStitcher.Database
                 e.Property(s => s.FilePath).IsRequired().HasMaxLength(500);
                 e.Property(s => s.DwgVersion).HasMaxLength(10);
                 e.Property(s => s.Status).HasConversion<string>().HasMaxLength(20);
+                e.Property(s => s.FailureReason).HasMaxLength(200);
                 e.HasIndex(s => s.LaghuReferenceNumber);
                 e.Property(s => s.FileHash).HasMaxLength(64);
                 e.HasOne(s => s.Project)

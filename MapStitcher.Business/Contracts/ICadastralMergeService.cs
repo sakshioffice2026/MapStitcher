@@ -13,6 +13,11 @@ namespace MapStitcher.Business.Contracts
         public int MatchedPointCount { get; set; }
         public int InlierPointCount { get; set; }
         public int RejectedOutlierCount { get; set; }
+
+        /// <summary>Technical detail for logs/diagnostics.</summary>
         public string? Message { get; set; }
+
+        /// <summary>Short, non-technical sentence safe to show directly on a grid-cell badge. Null on success.</summary>
+        public string? FailureReason { get; set; }
     }
 }

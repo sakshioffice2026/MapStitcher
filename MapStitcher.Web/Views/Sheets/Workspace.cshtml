@@ -21,192 +21,7 @@
     <meta charset="utf-8" />
     <title>Jigsaw Board — @Model.Village</title>
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
-    <style>
-        * { box-sizing: border-box; margin: 0; padding: 0; }
-
-        body {
-            background: #0f172a;
-            color: #e2e8f0;
-            font-family: 'Segoe UI', sans-serif;
-            height: 100vh;
-            display: flex;
-            flex-direction: column;
-            overflow: hidden;
-        }
-
-        .top-bar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 10px 20px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            flex-shrink: 0;
-        }
-
-        .top-bar .jurisdiction { font-size: 13px; color: #94a3b8; }
-        .top-bar .jurisdiction span { color: #38bdf8; font-weight: 600; }
-        .top-bar .actions { display: flex; gap: 8px; }
-
-        .workspace-layout { display: flex; flex: 1; overflow: hidden; }
-
-        .sidebar {
-            width: 220px;
-            background: #1e293b;
-            border-right: 1px solid #334155;
-            display: flex;
-            flex-direction: column;
-            flex-shrink: 0;
-        }
-
-        .sidebar-header {
-            padding: 12px 14px;
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #64748b;
-            border-bottom: 1px solid #334155;
-        }
-
-        .sidebar-sheet {
-            padding: 10px 14px;
-            border-bottom: 1px solid #1e293b;
-            cursor: pointer;
-            font-size: 12px;
-            transition: background 0.15s;
-            position: relative;
-        }
-
-        .sidebar-sheet:hover { background: #0f172a; }
-        .sidebar-sheet .sheet-num { font-weight: 600; color: #e2e8f0; }
-        .sidebar-sheet .sheet-status { font-size: 11px; margin-top: 2px; }
-        .sidebar-sheet.unplaced { border-left: 3px solid #f59e0b; }
-        .sidebar-sheet.placed   { border-left: 3px solid #22c55e; }
-
-        .sidebar-remove-btn {
-            position: absolute;
-            top: 8px;
-            right: 10px;
-            background: transparent;
-            border: none;
-            color: #475569;
-            font-size: 14px;
-            line-height: 1;
-            cursor: pointer;
-            padding: 2px 6px;
-            border-radius: 4px;
-        }
-
-        .sidebar-remove-btn:hover { color: #ef4444; background: #1e293b; }
-
-        .sidebar-upload { padding: 12px 14px; margin-top: auto; border-top: 1px solid #334155; }
-
-        .canvas-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
-
-        .canvas-toolbar {
-            background: #1e293b;
-            border-bottom: 1px solid #334155;
-            padding: 8px 16px;
-            display: flex;
-            align-items: center;
-            gap: 12px;
-            font-size: 12px;
-            color: #94a3b8;
-            flex-shrink: 0;
-        }
-
-        .view-toggle { display: flex; gap: 4px; }
-
-        .view-toggle button {
-            background: #0f172a;
-            border: 1px solid #334155;
-            color: #94a3b8;
-            padding: 3px 12px;
-            font-size: 11px;
-            border-radius: 4px;
-            cursor: pointer;
-        }
-
-        .view-toggle button.active { background: #0284c7; border-color: #0284c7; color: #fff; }
-
-        .canvas-scroll {
-            flex: 1;
-            overflow: auto;
-            padding: 32px;
-            display: flex;
-            align-items: flex-start;
-            justify-content: center;
-        }
-
-        #grid-view {
-            display: grid;
-            gap: 6px;
-            grid-template-columns: repeat(@gridCols, 160px);
-            grid-template-rows: repeat(@gridRows, 120px);
-        }
-
-        .grid-cell {
-            border-radius: 6px;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            justify-content: center;
-            font-size: 12px;
-            position: relative;
-            transition: box-shadow 0.2s;
-        }
-
-        .grid-cell.empty { background: #1e293b; border: 2px dashed #334155; color: #475569; cursor: pointer; }
-        .grid-cell.empty:hover { border-color: #38bdf8; color: #38bdf8; }
-        .grid-cell.filled { background: #1e3a5f; border: 2px solid #0284c7; cursor: pointer; }
-        .grid-cell.filled:hover { box-shadow: 0 0 0 2px #38bdf8; }
-        .grid-cell .cell-label { font-weight: 700; font-size: 14px; color: #38bdf8; }
-        .grid-cell .cell-ref { font-size: 10px; color: #94a3b8; margin-top: 2px; }
-        .grid-cell .cell-status-dot { width: 8px; height: 8px; border-radius: 50%; margin-top: 6px; }
-        .grid-cell .cell-coord { position: absolute; top: 4px; right: 6px; font-size: 9px; color: #475569; }
-        .grid-cell.drop-target { border-color: #f59e0b !important; background: #1c1a0a !important; }
-
-        #canvas-view { display: none; position: relative; width: 800px; height: 600px; }
-        #canvas-svg { width: 100%; height: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 8px; }
-
-        .detail-panel {
-            width: 260px;
-            background: #1e293b;
-            border-left: 1px solid #334155;
-            display: flex;
-            flex-direction: column;
-            flex-shrink: 0;
-        }
-
-        .detail-header {
-            padding: 12px 14px;
-            font-size: 11px;
-            font-weight: 700;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            color: #64748b;
-            border-bottom: 1px solid #334155;
-        }
-
-        .detail-body { padding: 14px; font-size: 12px; }
-        .detail-row { margin-bottom: 10px; }
-        .detail-row label { display: block; font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
-        .detail-row span { color: #e2e8f0; font-weight: 500; }
-        .detail-empty { color: #475569; font-size: 12px; }
-
-        .detail-actions { padding: 14px; border-top: 1px solid #334155; display: flex; flex-direction: column; gap: 6px; }
-
-        .merge-suggestions { padding: 0 14px 10px; display: flex; flex-direction: column; gap: 6px; }
-        .merge-suggestions .btn { text-align: left; }
-
-        .legend { padding: 10px 14px; border-top: 1px solid #334155; margin-top: auto; }
-        .legend-title { font-size: 10px; color: #64748b; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 6px; }
-        .legend-item { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #94a3b8; margin-bottom: 4px; }
-        .legend-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-
-        .alert-bar { padding: 8px 20px; font-size: 12px; flex-shrink: 0; }
-    </style>
+    <link href="~/css/workspace.css" rel="stylesheet" />
 </head>
 <body>
 
@@ -221,6 +36,7 @@
             </div>
         </div>
         <div class="actions">
+            <button type="button" class="btn btn-sm btn-primary" onclick="stitchAll()">⚡ Stitch Available Sheets</button>
             <a href="@Url.Action("Upload","Sheets", new { projectId = Model.ProjectID })"
                class="btn btn-sm btn-outline-info">+ Upload Sheet</a>
                <a href="@Url.Action("Export","Sheets", new { projectId = Model.ProjectID })"
@@ -303,7 +119,7 @@
             <div class="canvas-scroll">
 
                 @* ── Level 1: Grid View ── *@
-                <div id="grid-view">
+                <div id="grid-view" style="--grid-cols:@gridCols; --grid-rows:@gridRows;">
                     @for (int r = 0; r < gridRows; r++)
                     {
                         @for (int c = 0; c < gridCols; c++)
@@ -313,19 +129,29 @@
                             {
                                 string statusCol = statusColor.GetValueOrDefault(sheet.Status.ToString(), "#94a3b8");
                                 <div class="grid-cell filled"
+                                     id="cell-@r-@c"
+                                     data-row="@r" data-col="@c"
+                                     data-sheet-id="@sheet.SheetID"
+                                     data-laghu="@(sheet.LaghuReferenceNumber ?? "—")"
+                                     draggable="true"
+                                     ondragstart="dragStart(event, @sheet.SheetID)"
                                      onclick="selectSheet(@sheet.SheetID)"
                                      title="Sheet @sheet.SheetNumber">
                                     <div class="cell-coord">@r,@c</div>
                                     <div class="cell-label">@sheet.SheetNumber</div>
                                     <div class="cell-ref">@(sheet.LaghuReferenceNumber ?? "—")</div>
                                     <div class="cell-status-dot" style="background:@statusCol"></div>
+                                    @if (!string.IsNullOrWhiteSpace(sheet.FailureReason))
+                                    {
+                                        <div class="cell-warning-badge" title="@sheet.FailureReason">⚠ @sheet.FailureReason</div>
+                                    }
                                 </div>
                             }
                             else
                             {
                                 <div class="grid-cell empty"
-                                     ondragover="allowDrop(event)"
-                                     ondrop="dropSheet(event, @r, @c)"
+                                     id="cell-@r-@c"
+                                     data-row="@r" data-col="@c"
                                      onclick="promptManualPlace(@r, @c)"
                                      title="Empty — drop sheet here">
                                     <div class="cell-coord">@r,@c</div>
@@ -349,7 +175,12 @@
 
                             string statusCol = statusColor.GetValueOrDefault(sheet.Status.ToString(), "#94a3b8");
 
-                            <g class="sheet-polygon" onclick="selectSheet(@sheet.SheetID)" style="cursor:pointer">
+                            <g class="sheet-polygon" id="poly-@sheet.SheetID"
+                               data-sheet-id="@sheet.SheetID"
+                               data-row="@sheet.GridRow" data-col="@sheet.GridCol"
+                               data-laghu="@(sheet.LaghuReferenceNumber ?? "—")"
+                               onmousedown="svgDragStart(event, @sheet.SheetID)"
+                               onclick="selectSheet(@sheet.SheetID)" style="cursor:grab">
                                 <rect x="@svgX" y="@svgY" width="@w" height="@h"
                                       rx="4" ry="4"
                                       fill="#1e3a5f" stroke="@statusCol" stroke-width="2"
@@ -364,6 +195,8 @@
                                         r="5" fill="@statusCol" />
                             </g>
                         }
+                        <rect id="ghost-slot" x="0" y="0" width="170" height="125" rx="4" ry="4"
+                              fill="none" stroke-width="2" stroke-dasharray="6 4" style="display:none; pointer-events:none;" />
                     </svg>
                 </div>
 
@@ -450,142 +283,33 @@
         <input type="hidden" name="adjacentSheetId" id="merge-adjacent-id" />
     </form>
 
+    @* ── Stitch All Form (hidden, submitted via JS) ── *@
+    <form method="post" id="form-stitch-all" action="@Url.Action("StitchAll","Sheets")">
+        @Html.AntiForgeryToken()
+        <input type="hidden" name="projectId" value="@Model.ProjectID" />
+    </form>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
     <script>
-        const sheets = @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
-            Model.Sheets.Select(s => new {
-                s.SheetID,
-                s.SheetNumber,
-                LaghuRef = s.LaghuReferenceNumber ?? "—",
-                Status   = s.Status.ToString(),
-                GridRow  = s.GridRow,
-                GridCol  = s.GridCol
-            })
-        ));
-
-        let selectedSheetId = null;
-        let draggedSheetId  = null;
-
-        function switchView(mode) {
-            document.getElementById('grid-view').style.display   = mode === 'grid'   ? 'grid' : 'none';
-            document.getElementById('canvas-view').style.display = mode === 'canvas' ? 'block' : 'none';
-            document.getElementById('btn-grid').classList.toggle('active',   mode === 'grid');
-            document.getElementById('btn-canvas').classList.toggle('active', mode === 'canvas');
-        }
-
-        // ── Sheet Selection → Detail Panel + Merge Suggestions ──
-        function selectSheet(sheetId) {
-            selectedSheetId = sheetId;
-            const s = sheets.find(x => x.SheetID === sheetId);
-            if (!s) return;
-
-            document.getElementById('detail-body').innerHTML = `
-                <div class="detail-row"><label>Sheet Number</label><span>${s.SheetNumber}</span></div>
-                <div class="detail-row"><label>Laghu Ref</label><span>${s.LaghuRef}</span></div>
-                <div class="detail-row"><label>Status</label><span>${s.Status}</span></div>
-                <div class="detail-row"><label>Grid Position</label>
-                    <span>${s.GridRow !== null ? '(' + s.GridRow + ', ' + s.GridCol + ')' : 'Unplaced'}</span>
-                </div>
-            `;
-
-            document.getElementById('parse-sheet-id').value = sheetId;
-            document.getElementById('btn-georeference').href =
-                '@Url.Action("Georeference","Sheets")?sheetId=' + sheetId;
-            document.getElementById('detail-actions').style.display = 'flex';
-
-            renderMergeSuggestions(s);
-        }
-
-        // Show a "Merge with Sheet X" button for every grid-adjacent placed sheet.
-        // No completeness requirement — works with however many sheets exist.
-        function renderMergeSuggestions(sheet) {
-            const container = document.getElementById('merge-suggestions');
-            container.innerHTML = '';
-
-            if (sheet.GridRow === null || sheet.GridCol === null) return;
-
-            const neighborOffsets = [
-                { dr: -1, dc: 0, label: 'North' },
-                { dr: 1,  dc: 0, label: 'South' },
-                { dr: 0,  dc: -1, label: 'West' },
-                { dr: 0,  dc: 1,  label: 'East' }
-            ];
-
-            neighborOffsets.forEach(off => {
-                const neighbor = sheets.find(x =>
-                    x.GridRow === sheet.GridRow + off.dr &&
-                    x.GridCol === sheet.GridCol + off.dc);
-
-                if (!neighbor) return;
-
-                const btn = document.createElement('button');
-                btn.className = 'btn btn-sm btn-success w-100';
-                btn.textContent = `Merge with Sheet ${neighbor.SheetNumber} (${off.label})`;
-                btn.onclick = () => triggerMerge(sheet.SheetID, neighbor.SheetID);
-                container.appendChild(btn);
-            });
-        }
-
-        function triggerMerge(baseSheetId, adjacentSheetId) {
-            document.getElementById('merge-base-id').value = baseSheetId;
-            document.getElementById('merge-adjacent-id').value = adjacentSheetId;
-            document.getElementById('form-merge').submit();
-        }
-
-        // ── Remove Sheet ──
-        function removeSheet(sheetId, sheetNumber) {
-            if (!confirm(`Remove Sheet ${sheetNumber}? This deletes its file and all tie points. This cannot be undone.`)) {
-                return;
+        window.workspaceConfig = {
+            sheets: @Html.Raw(System.Text.Json.JsonSerializer.Serialize(
+                Model.Sheets.Select(s => new {
+                    s.SheetID,
+                    s.SheetNumber,
+                    LaghuRef = s.LaghuReferenceNumber ?? "—",
+                    Status   = s.Status.ToString(),
+                    GridRow  = s.GridRow,
+                    GridCol  = s.GridCol
+                })
+            )),
+            unplacedCount: @Model.UnplacedSheets.Count,
+            urls: {
+                georeference: '@Url.Action("Georeference","Sheets")',
+                getOpenSlots: '@Url.Action("GetOpenSlots","Sheets")',
+                placeSheet: '@Url.Action("PlaceSheet","Sheets")'
             }
-            document.getElementById('remove-sheet-id').value = sheetId;
-            document.getElementById('form-remove').submit();
-        }
-
-        function removeSelectedSheet() {
-            if (!selectedSheetId) return;
-            const s = sheets.find(x => x.SheetID === selectedSheetId);
-            removeSheet(selectedSheetId, s ? s.SheetNumber : selectedSheetId);
-        }
-
-        // ── Drag and Drop ──
-        function dragStart(event, sheetId) {
-            draggedSheetId = sheetId;
-            event.dataTransfer.effectAllowed = 'move';
-        }
-
-        function allowDrop(event) {
-            event.preventDefault();
-            event.currentTarget.classList.add('drop-target');
-        }
-
-        function dropSheet(event, row, col) {
-            event.preventDefault();
-            event.currentTarget.classList.remove('drop-target');
-
-            if (!draggedSheetId) return;
-
-            const form = new FormData();
-            form.append('sheetId',  draggedSheetId);
-            form.append('gridRow',  row);
-            form.append('gridCol',  col);
-            form.append('__RequestVerificationToken',
-                document.querySelector('#form-remove input[name="__RequestVerificationToken"]').value);
-
-            fetch('@Url.Action("PlaceSheet","Sheets")', { method: 'POST', body: form })
-                .then(() => location.reload());
-        }
-
-        function promptManualPlace(row, col) {
-            if (@Model.UnplacedSheets.Count === 0) return;
-            document.getElementById('target-cell-label').textContent = `(${row}, ${col})`;
-            document.getElementById('manual-row').value = row;
-            document.getElementById('manual-col').value = col;
-            new bootstrap.Modal(document.getElementById('manualPlaceModal')).show();
-        }
-
-        document.querySelectorAll('.grid-cell.empty').forEach(cell => {
-            cell.addEventListener('dragleave', () => cell.classList.remove('drop-target'));
-        });
+        };
     </script>
+    <script src="~/js/workspace.js"></script>
 </body>
 </html>

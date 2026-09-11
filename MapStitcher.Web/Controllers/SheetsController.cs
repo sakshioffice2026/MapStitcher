@@ -14,6 +14,7 @@ namespace MapStitcher.Web.Controllers
         private readonly ICadastralParsingService _parsingService;
         private readonly ICadastralMergeService _mergeService;
         private readonly ISheetPlacementService _placementService;
+        private readonly IStitchOrchestrationService _stitchService;
         private readonly ICadastralExportService _exportService;
         private readonly IWebHostEnvironment _env;
 
@@ -27,6 +28,7 @@ namespace MapStitcher.Web.Controllers
             ICadastralParsingService parsingService,
             ICadastralMergeService mergeService,
             ISheetPlacementService placementService,
+            IStitchOrchestrationService stitchService,
             ICadastralExportService exportService,
             IWebHostEnvironment env)
         {
@@ -37,6 +39,7 @@ namespace MapStitcher.Web.Controllers
             _parsingService = parsingService;
             _mergeService = mergeService;
             _placementService = placementService;
+            _stitchService = stitchService;
             _env = env;
         }
 
@@ -166,8 +169,8 @@ namespace MapStitcher.Web.Controllers
                         messages.Add($"{file.FileName}: uploaded, parsed, placed at ({placement.GridRow},{placement.GridCol}).");
 
                         // Auto-merge with any already-placed grid-neighbors
-                        var mergeMessages = await TryAutoMergeWithNeighborsAsync(sheet.SheetID);
-                        messages.AddRange(mergeMessages);
+                        var mergeAttempts = await TryAutoMergeWithNeighborsAsync(sheet.SheetID);
+                        messages.AddRange(mergeAttempts.Select(FormatMergeMessage));
                     }
                     else
                     {
@@ -208,24 +211,95 @@ namespace MapStitcher.Web.Controllers
         }
 
         [HttpPost]
+        public async Task<IActionResult> StitchAll(int projectId)
+        {
+            var project = await _projectRepo.GetByIdAsync(projectId);
+            if (project == null)
+                return NotFound("Invalid ProjectID.");
+
+            var result = await _stitchService.StitchAllAsync(projectId);
+
+            foreach (var outcome in result.Outcomes)
+            {
+                var sheet = await _sheetRepo.GetByIdAsync(outcome.SheetID);
+                if (sheet == null)
+                    continue;
+
+                sheet.FailureReason = outcome.FailureReason;
+                if (outcome.Merged)
+                    sheet.Status = SheetStatus.Merged;
+            }
+            await _sheetRepo.SaveChangesAsync();
+
+            bool isAjax = Request.Headers["X-Requested-With"] == "XMLHttpRequest";
+            if (isAjax)
+            {
+                return Json(new
+                {
+                    totalSheets = result.TotalSheets,
+                    placedCount = result.PlacedCount,
+                    mergedCount = result.MergedCount,
+                    needsManualCheckCount = result.NeedsManualCheckCount,
+                    outcomes = result.Outcomes.Select(o => new
+                    {
+                        sheetId = o.SheetID,
+                        sheetNumber = o.SheetNumber,
+                        merged = o.Merged,
+                        failureReason = o.FailureReason
+                    })
+                });
+            }
+
+            TempData["Success"] = $"Stitched {result.MergedCount}/{result.TotalSheets} sheets.";
+            return RedirectToAction("Workspace", new { projectId });
+        }
+
+        [HttpGet]
+        public async Task<IActionResult> GetOpenSlots(int sheetId)
+        {
+            var slots = await _placementService.GetOpenTargetSlotsAsync(sheetId);
+            return Json(slots.Select(s => new { gridRow = s.GridRow, gridCol = s.GridCol, label = s.Label }));
+        }
+
+        [HttpPost]
         public async Task<IActionResult> PlaceSheet(int sheetId, int gridRow, int gridCol)
         {
             var sheet = await _sheetRepo.GetByIdAsync(sheetId);
             if (sheet == null)
                 return NotFound("Sheet not found.");
 
+            bool isAjax = Request.Headers["X-Requested-With"] == "XMLHttpRequest";
             var result = await _placementService.ManualPlaceSheetAsync(sheetId, gridRow, gridCol);
 
-            if (result.Success)
-            {
-                var mergeMessages = await TryAutoMergeWithNeighborsAsync(sheetId);
-                TempData["Success"] = result.Message + (mergeMessages.Any()
-                    ? " | " + string.Join(" | ", mergeMessages)
-                    : "");
-            }
-            else
+            if (!result.Success)
             {
                 TempData["Error"] = result.Message;
+                if (isAjax)
+                    return Json(new { success = false, placementMessage = result.Message, merges = Array.Empty<object>() });
+
+                return RedirectToAction("Workspace", new { projectId = sheet.ProjectID });
+            }
+
+            var mergeAttempts = await TryAutoMergeWithNeighborsAsync(sheetId);
+            TempData["Success"] = result.Message + (mergeAttempts.Any()
+                ? " | " + string.Join(" | ", mergeAttempts.Select(FormatMergeMessage))
+                : "");
+
+            if (isAjax)
+            {
+                return Json(new
+                {
+                    success = true,
+                    placementMessage = result.Message,
+                    merges = mergeAttempts.Select(m => new
+                    {
+                        neighborSheetId = m.NeighborSheetId,
+                        neighborSheetNumber = m.NeighborSheetNumber,
+                        success = m.Success,
+                        rmsError = m.RmsErrorMeters,
+                        message = m.Message
+                    })
+                });
             }
 
             return RedirectToAction("Workspace", new { projectId = sheet.ProjectID });
@@ -241,6 +315,13 @@ namespace MapStitcher.Web.Controllers
             try
             {
                 var result = await _mergeService.MergeSheetsAsync(baseSheetId, adjacentSheetId);
+
+                var adjacentSheet = await _sheetRepo.GetByIdAsync(adjacentSheetId);
+                if (adjacentSheet != null)
+                {
+                    adjacentSheet.FailureReason = result.FailureReason;
+                    await _sheetRepo.SaveChangesAsync();
+                }
 
                 TempData[result.Success ? "Success" : "Error"] =
                     $"{result.Message} (Matched: {result.MatchedPointCount}, Inliers: {result.InlierPointCount}, RMS: {result.RmsErrorMeters:F3})";
@@ -380,13 +461,13 @@ namespace MapStitcher.Web.Controllers
         // Checks all 4 grid-neighbors of a freshly placed sheet and attempts
         // a merge with each one that already exists. Safe to call repeatedly —
         // MergeSheetsAsync itself rejects when fewer than 2 tie points match.
-        private async Task<List<string>> TryAutoMergeWithNeighborsAsync(int sheetId)
+        private async Task<List<MergeAttemptResult>> TryAutoMergeWithNeighborsAsync(int sheetId)
         {
-            var messages = new List<string>();
+            var attempts = new List<MergeAttemptResult>();
 
             var sheet = await _sheetRepo.GetByIdAsync(sheetId);
             if (sheet == null || !sheet.GridRow.HasValue || !sheet.GridCol.HasValue)
-                return messages;
+                return attempts;
 
             var siblings = await _sheetRepo.GetByProjectIdAsync(sheet.ProjectID);
 
@@ -405,18 +486,28 @@ namespace MapStitcher.Web.Controllers
                 try
                 {
                     var result = await _mergeService.MergeSheetsAsync(sheetId, neighbor.SheetID);
+                    neighbor.FailureReason = result.FailureReason;
+                    await _sheetRepo.SaveChangesAsync();
 
-                    messages.Add(result.Success
-                        ? $"Auto-merged with Sheet {neighbor.SheetNumber} (RMS: {result.RmsErrorMeters:F3})."
-                        : $"Auto-merge with Sheet {neighbor.SheetNumber} skipped: {result.Message}");
+                    attempts.Add(new MergeAttemptResult(
+                        neighbor.SheetID, neighbor.SheetNumber, result.Success,
+                        result.RmsErrorMeters, result.Message));
                 }
                 catch (Exception ex)
                 {
-                    messages.Add($"Auto-merge with Sheet {neighbor.SheetNumber} failed: {ex.Message}");
+                    attempts.Add(new MergeAttemptResult(
+                        neighbor.SheetID, neighbor.SheetNumber, false, 0.0, ex.Message));
                 }
             }
 
-            return messages;
+            return attempts;
         }
+
+        private static string FormatMergeMessage(MergeAttemptResult m) => m.Success
+            ? $"Auto-merged with Sheet {m.NeighborSheetNumber} (RMS: {m.RmsErrorMeters:F3})."
+            : $"Auto-merge with Sheet {m.NeighborSheetNumber} skipped: {m.Message}";
+
+        private sealed record MergeAttemptResult(
+            int NeighborSheetId, string NeighborSheetNumber, bool Success, double RmsErrorMeters, string Message);
     }
 }

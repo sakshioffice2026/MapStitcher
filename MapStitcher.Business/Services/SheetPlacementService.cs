@@ -90,6 +90,73 @@ namespace MapStitcher.Business.Services
             return Fail(sheetId, "Could not determine grid position from shared tie points. Use manual placement.");
         }
 
+        // Returns every valid empty neighbor cell for this sheet, based on shared tie point
+        // labels with already-placed sheets. Used by the UI to highlight "Connect Here" cells
+        // when a sheet card is selected — no directional (N/S/E/W) language involved.
+        public async Task<List<OpenSlot>> GetOpenTargetSlotsAsync(int sheetId)
+        {
+            var slots = new List<OpenSlot>();
+
+            var sheet = await _sheetRepo.GetByIdAsync(sheetId);
+            if (sheet == null)
+                return slots;
+
+            var incomingPoints = await _tiePointRepo.GetBySheetIdAsync(sheetId);
+            var labeledPoints = incomingPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+            if (!labeledPoints.Any())
+                return slots;
+
+            var placedSheets = (await _sheetRepo.GetByProjectIdAsync(sheet.ProjectID))
+                .Where(s => s.SheetID != sheetId && s.GridRow.HasValue && s.GridCol.HasValue)
+                .ToList();
+
+            if (!placedSheets.Any())
+                return slots; // Nothing placed yet — this would anchor at (0,0), not a "connect" case.
+
+            foreach (var placedSheet in placedSheets)
+            {
+                var placedPoints = await _tiePointRepo.GetBySheetIdAsync(placedSheet.SheetID);
+                var sharedLabels = labeledPoints
+                    .Select(p => p.PointLabel)
+                    .Intersect(placedPoints
+                        .Where(p => !string.IsNullOrWhiteSpace(p.PointLabel))
+                        .Select(p => p.PointLabel))
+                    .ToList();
+
+                if (!sharedLabels.Any())
+                    continue;
+
+                double incomingCentroidX = labeledPoints.Average(p => p.SourceX);
+                double incomingCentroidY = labeledPoints.Average(p => p.SourceY);
+
+                var sharedPlacedPoints = placedPoints
+                    .Where(p => sharedLabels.Contains(p.PointLabel))
+                    .ToList();
+
+                double placedCentroidX = sharedPlacedPoints.Average(p => p.SourceX);
+                double placedCentroidY = sharedPlacedPoints.Average(p => p.SourceY);
+
+                double dx = incomingCentroidX - placedCentroidX;
+                double dy = incomingCentroidY - placedCentroidY;
+
+                int targetRow = placedSheet.GridRow!.Value;
+                int targetCol = placedSheet.GridCol!.Value;
+
+                if (Math.Abs(dx) >= Math.Abs(dy))
+                    targetCol += dx > 0 ? 1 : -1;
+                else
+                    targetRow += dy > 0 ? -1 : 1;
+
+                bool occupied = placedSheets.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
+                bool alreadyListed = slots.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
+
+                if (!occupied && !alreadyListed)
+                    slots.Add(new OpenSlot { GridRow = targetRow, GridCol = targetCol });
+            }
+
+            return slots;
+        }
+
         // Manual placement: user explicitly assigns grid row/col from the jigsaw board UI.
         public async Task<PlacementResult> ManualPlaceSheetAsync(int sheetId, int gridRow, int gridCol)
         {

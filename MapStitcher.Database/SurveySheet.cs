@@ -1,5 +1,4 @@
-﻿// Database/SurveySheet.cs — full file
-namespace MapStitcher.Database
+﻿namespace MapStitcher.Database
 {
     public class SurveySheet
     {
@@ -11,6 +10,7 @@ namespace MapStitcher.Database
         public string? FileHash { get; set; }
         public string? DwgVersion { get; set; }
         public SheetStatus Status { get; set; } = SheetStatus.Uploaded;
+        public string? FailureReason { get; set; }
         public int? GridRow { get; set; }
         public int? GridCol { get; set; }
 

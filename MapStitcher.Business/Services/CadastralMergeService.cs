@@ -41,7 +41,8 @@ namespace MapStitcher.Business.Services
                 {
                     Success = false,
                     MatchedPointCount = matchedPairs.Count,
-                    Message = $"Insufficient matching tie points ({matchedPairs.Count}). Minimum 2 required."
+                    Message = $"Insufficient matching tie points ({matchedPairs.Count}). Minimum 2 required.",
+                    FailureReason = "Needs manual check: missing common points with neighboring sheet"
                 };
             }
 
@@ -65,7 +66,8 @@ namespace MapStitcher.Business.Services
                     Success = false,
                     MatchedPointCount = matchedPairs.Count,
                     RejectedOutlierCount = rejectedCount,
-                    Message = $"Too few inlier points after outlier rejection ({inlierPairs.Count}/{matchedPairs.Count})."
+                    Message = $"Too few inlier points after outlier rejection ({inlierPairs.Count}/{matchedPairs.Count}).",
+                    FailureReason = "Needs manual check: common points don't line up consistently"
                 };
             }
 
@@ -108,7 +110,10 @@ namespace MapStitcher.Business.Services
                 RejectedOutlierCount = rejectedCount,
                 Message = success
                     ? $"Merge completed using {inlierPairs.Count}/{matchedPairs.Count} points ({rejectedCount} outliers rejected)."
-                    : $"RMS error ({rmsError:F3}) exceeds threshold ({RmsErrorThreshold}) even after rejecting {rejectedCount} outliers."
+                    : $"RMS error ({rmsError:F3}) exceeds threshold ({RmsErrorThreshold}) even after rejecting {rejectedCount} outliers.",
+                FailureReason = success
+                    ? null
+                    : "Needs manual check: sheets don't align closely enough"
             };
         }
 

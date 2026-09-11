@@ -24,6 +24,7 @@ builder.Services.AddScoped<ITiePointRepository, TiePointRepository>();
 builder.Services.AddScoped<ISheetBoundaryRepository, SheetBoundaryRepository>();
 builder.Services.AddScoped<ICadastralMergeService, CadastralMergeService>();
 builder.Services.AddScoped<ISheetPlacementService, SheetPlacementService>();
+builder.Services.AddScoped<IStitchOrchestrationService, StitchOrchestrationService>();
 builder.Services.AddScoped<ICadastralExportService, CadastralExportService>();
 builder.Services.AddScoped<ICadastralParsingService>(sp =>
 {

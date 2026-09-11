@@ -5,7 +5,6 @@ using MapStitcher.Business.Contracts;
 using MapStitcher.Database;
 using MapStitcher.Repositories.Contracts;
 using NetTopologySuite.Geometries;
-using CadPoint = ACadSharp.Entities.Point;
 
 namespace MapStitcher.Business.Services
 {
@@ -63,7 +62,7 @@ namespace MapStitcher.Business.Services
             // Pass 1: Collect text candidates with their InsertPoint positions
             var textCandidates = new List<(string Label, double X, double Y)>();
 
-            // Pass 2: Collect raw point locations
+            // Pass 2: Collect cross-hair tie-point marker positions (block inserts)
             var rawPoints = new List<(double X, double Y)>();
 
             foreach (var entity in document.Entities)
@@ -88,8 +87,8 @@ namespace MapStitcher.Business.Services
                             textCandidates);
                         break;
 
-                    case CadPoint point:
-                        rawPoints.Add((point.Location.X, point.Location.Y));
+                    case Insert insert:
+                        rawPoints.Add((insert.InsertPoint.X, insert.InsertPoint.Y));
                         break;
 
                     case LwPolyline lwPoly:
