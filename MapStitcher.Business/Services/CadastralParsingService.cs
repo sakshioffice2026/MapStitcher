@@ -5,6 +5,7 @@ using MapStitcher.Business.Contracts;
 using MapStitcher.Database;
 using MapStitcher.Repositories.Contracts;
 using MapStitcher.Utilities;
+using Microsoft.Extensions.Logging;
 using NetTopologySuite.Geometries;
 using System.Text.RegularExpressions;
 
@@ -16,6 +17,11 @@ namespace MapStitcher.Business.Services
         private readonly ITiePointRepository _tiePointRepo;
         private readonly ISheetBoundaryRepository _boundaryRepo;
         private readonly string _uploadRootPath;
+        private readonly ILogger<CadastralParsingService>? _logger;
+
+        // Counts boundary-capable entities skipped this parse run because they
+        // had fewer than 3 vertices, purely for diagnostics/logging.
+        private int _skippedShortPolylineCount;
 
         private const double SpatialThreshold = 5.0;
         private const string AdjacentSheetLayerName = "Text_Adjacent_No";
@@ -31,12 +37,14 @@ namespace MapStitcher.Business.Services
             ISurveySheetRepository sheetRepo,
             ITiePointRepository tiePointRepo,
             ISheetBoundaryRepository boundaryRepo,
-            string uploadRootPath)
+            string uploadRootPath,
+            ILogger<CadastralParsingService>? logger = null)
         {
             _sheetRepo = sheetRepo;
             _tiePointRepo = tiePointRepo;
             _boundaryRepo = boundaryRepo;
             _uploadRootPath = uploadRootPath;
+            _logger = logger;
         }
 
         public async Task ParseSheetAsync(int sheetId)
@@ -58,6 +66,8 @@ namespace MapStitcher.Business.Services
             }
 
             sheet.DwgVersion = document.Header?.Version.ToString();
+            _skippedShortPolylineCount = 0;
+            int boundaryCandidateCount = 0;
 
             // Pass 1: Collect text candidates with their InsertPoint positions
             var textCandidates = new List<(string Label, double X, double Y)>();
@@ -94,17 +104,35 @@ namespace MapStitcher.Business.Services
                         break;
 
                     case LwPolyline lwPoly:
+                        boundaryCandidateCount++;
                         await ProcessBoundaryAsync(
                             lwPoly.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)),
                             sheet);
                         break;
 
                     case Polyline2D poly2d:
+                        boundaryCandidateCount++;
                         await ProcessBoundaryAsync(
                             poly2d.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)),
                             sheet);
                         break;
                 }
+            }
+
+            if (boundaryCandidateCount == 0)
+            {
+                _logger?.LogWarning(
+                    "Sheet {SheetId}: no LwPolyline/Polyline2D entities found in the CAD file. " +
+                    "The boundary may be drawn with an unsupported entity type (e.g. LINE, SPLINE, 3D POLYLINE, HATCH) " +
+                    "or on a block insert.",
+                    sheetId);
+            }
+            else if (_skippedShortPolylineCount == boundaryCandidateCount)
+            {
+                _logger?.LogWarning(
+                    "Sheet {SheetId}: found {Count} polyline entity(ies) but all had fewer than 3 vertices; " +
+                    "no boundary geometry was saved.",
+                    sheetId, boundaryCandidateCount);
             }
 
             // Pass 3: Greedy unique nearest-neighbor assignment
@@ -251,7 +279,13 @@ namespace MapStitcher.Business.Services
         {
             var coords = rawCoords.ToList();
             if (coords.Count < 3)
+            {
+                _skippedShortPolylineCount++;
+                _logger?.LogWarning(
+                    "Sheet {SheetId}: skipped a polyline with only {VertexCount} vertex(es); at least 3 are required to form a boundary.",
+                    sheet.SheetID, coords.Count);
                 return;
+            }
 
             if (!coords[0].Equals2D(coords[^1]))
                 coords.Add(coords[0]);

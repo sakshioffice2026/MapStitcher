@@ -70,6 +70,12 @@
                 ⚡ Stitch Available Sheets
             </button>
 
+            <button type="button"
+                    class="btn btn-sm btn-warning"
+                    onclick="mergeSheets()">
+                🧩 Merge Sheets
+            </button>
+
             <a href="@Url.Action("Upload", "Sheets", new { projectId = Model.ProjectID })"
                class="btn btn-sm btn-outline-info">
                 + Upload Sheet
@@ -714,6 +720,27 @@
         <input type="hidden"
                name="projectId"
                value="@Model.ProjectID" />
+
+    </form>
+
+
+    <!-- =========================================================
+         MERGE SHEETS FORM (jigsaw full-entity DXF export)
+         ========================================================= -->
+
+    <form method="post"
+          id="form-merge-sheets"
+          action="@Url.Action("MergeSheets", "Sheets")">
+
+        @Html.AntiForgeryToken()
+
+        <input type="hidden"
+               name="projectId"
+               value="@Model.ProjectID" />
+
+        <input type="hidden"
+               name="columnsPerRow"
+               id="merge-sheets-columns-per-row" />
 
     </form>
 

@@ -5,11 +5,13 @@ using MapStitcher.Repositories.Contracts;
 
 namespace MapStitcher.Business.Services
 {
-    // Merge strategy: pure Laghu Reference index chaining for the link,
-// with tie-point label matching as the primary pairing method, and a
-// centroid-offset spatial fallback when no labeled pairs are found.
-// This ensures at least a best-effort translation is always computed,
-// preventing sheets from keeping identity transforms and collapsing at origin.
+    // Merge strategy: tie-point X,Y coordinate matching is the primary and only
+    // gate for merging (label match first, spatial-proximity fallback second).
+    // The Laghu Reference chain, when present, is recorded for traceability only
+    // — it no longer blocks a merge that tie points otherwise support.
+    // Translation is composed onto the base sheet's existing global position, so
+    // a root/anchor sheet (TransformTranslateX/Y = 0) stays at the origin and
+    // every merge downstream of it accumulates correctly in one shared frame.
     public class CadastralMergeService : ICadastralMergeService
     {
         private const double SpatialThreshold = 25.0; // pixels — used for centroid fallback matching
@@ -39,40 +41,48 @@ namespace MapStitcher.Business.Services
                 ?? throw new InvalidOperationException(
                     $"Adjacent sheet {adjacentSheetId} not found.");
 
-            string? linkedVia = ResolveLaghuLink(baseSheet, adjacentSheet);
+            var basePoints = await _tiePointRepo.GetBySheetIdAsync(baseSheetId);
+            var adjacentPoints = await _tiePointRepo.GetBySheetIdAsync(adjacentSheetId);
+            var matchedPairs = FindMatchingPairs(basePoints, adjacentPoints);
 
-            if (linkedVia == null)
+            double localTranslateX = 0;
+            double localTranslateY = 0;
+            bool haveOffset = false;
+
+            // Compute a best-effort local X,Y offset:
+            // 1) If labeled pairs matched, use their average offset
+            // 2) Otherwise, fall back to centroid difference of ALL labeled points
+            if (matchedPairs.Count > 0)
+            {
+                localTranslateX = matchedPairs.Average(p => p.BasePoint.SourceX - p.AdjacentPoint.SourceX);
+                localTranslateY = matchedPairs.Average(p => p.BasePoint.SourceY - p.AdjacentPoint.SourceY);
+                haveOffset = true;
+            }
+            else if (basePoints.Count > 0 && adjacentPoints.Count > 0)
+            {
+                // Centroid fallback: translate so that the two sheets' point clouds align
+                localTranslateX = basePoints.Average(p => p.SourceX) - adjacentPoints.Average(p => p.SourceX);
+                localTranslateY = basePoints.Average(p => p.SourceY) - adjacentPoints.Average(p => p.SourceY);
+                haveOffset = true;
+            }
+
+            if (!haveOffset)
             {
                 return new MergeResult
                 {
                     Success = false,
                     MatchedPointCount = 0,
-                    Message = $"No Laghu Reference match: base='{baseSheet.LaghuReferenceNumber}', adjacent='{adjacentSheet.LaghuReferenceNumber}'.",
-                    FailureReason = "Needs manual check: Laghu Sheet No. does not match adjacent sheet"
+                    Message = $"No tie points on sheet {baseSheet.SheetNumber} and/or {adjacentSheet.SheetNumber} to compute an X,Y offset.",
+                    FailureReason = "Needs manual check: no tie points available for coordinate matching"
                 };
             }
 
-            var basePoints = await _tiePointRepo.GetBySheetIdAsync(baseSheetId);
-            var adjacentPoints = await _tiePointRepo.GetBySheetIdAsync(adjacentSheetId);
-            var matchedPairs = FindMatchingPairs(basePoints, adjacentPoints);
-
-            double translateX = 0;
-            double translateY = 0;
-
-            // Always compute a best-effort translation:
-            // 1) If labeled pairs matched, use their average offset
-            // 2) Otherwise, fall back to centroid difference of ALL labeled points
-            if (matchedPairs.Count > 0)
-            {
-                translateX = matchedPairs.Average(p => p.BasePoint.SourceX - p.AdjacentPoint.SourceX);
-                translateY = matchedPairs.Average(p => p.BasePoint.SourceY - p.AdjacentPoint.SourceY);
-            }
-            else if (basePoints.Count > 0 && adjacentPoints.Count > 0)
-            {
-                // Centroid fallback: translate so that the two sheets' point clouds align
-                translateX = basePoints.Average(p => p.SourceX) - adjacentPoints.Average(p => p.SourceX);
-                translateY = basePoints.Average(p => p.SourceY) - adjacentPoints.Average(p => p.SourceY);
-            }
+            // Compose onto the base sheet's existing global position. A never-merged
+            // root sheet has TransformTranslateX/Y == 0, so it anchors the mosaic at
+            // the origin; every sheet merged onto it (directly or via a chain)
+            // accumulates the correct absolute X,Y from there.
+            double globalTranslateX = baseSheet.TransformTranslateX + localTranslateX;
+            double globalTranslateY = baseSheet.TransformTranslateY + localTranslateY;
 
             foreach (var point in adjacentPoints)
             {
@@ -103,18 +113,23 @@ namespace MapStitcher.Business.Services
             await _tiePointRepo.SaveChangesAsync();
             await _sheetRepo.SaveChangesAsync();
 
+            string? linkedVia = ResolveLaghuLink(baseSheet, adjacentSheet);
+
             return new MergeResult
             {
                 Success = true,
                 MatchedPointCount = matchedPairs.Count,
                 InlierPointCount = matchedPairs.Count,
-                Message = $"Merged via Laghu Reference chain ({linkedVia}: {baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber}).",
+                Message = linkedVia != null
+                    ? $"Merged via tie-point X,Y match, confirmed by Laghu Reference chain ({linkedVia}: {baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber})."
+                    : $"Merged via tie-point X,Y match ({baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber}).",
                 FailureReason = null
             };
         }
 
         // Returns the matched reference number if either sheet's LaghuReferenceNumber
         // points to the other sheet's SheetNumber; null if no index link exists.
+        // Informational only — no longer gates whether a merge is allowed.
         private static string? ResolveLaghuLink(SurveySheet baseSheet, SurveySheet adjacentSheet)
         {
             if (!string.IsNullOrWhiteSpace(adjacentSheet.LaghuReferenceNumber) &&

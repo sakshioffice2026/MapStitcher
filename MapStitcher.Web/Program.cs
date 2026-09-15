@@ -36,6 +36,21 @@ builder.Services.AddScoped<ICadastralParsingService>(sp =>
     return new CadastralParsingService(sheetRepo, tiePointRepo, boundaryRepo, env.WebRootPath);
 });
 
+builder.Services.AddScoped<IJigsawIndexExtractionService>(sp =>
+{
+    var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();
+    var env = sp.GetRequiredService<IWebHostEnvironment>();
+    return new JigsawIndexExtractionService(sheetRepo, env.WebRootPath);
+});
+
+builder.Services.AddScoped<IJigsawStitchService>(sp =>
+{
+    var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();
+    var indexService = sp.GetRequiredService<IJigsawIndexExtractionService>();
+    var env = sp.GetRequiredService<IWebHostEnvironment>();
+    return new JigsawStitchService(sheetRepo, indexService, env.WebRootPath);
+});
+
 var app = builder.Build();
 
 if (!app.Environment.IsDevelopment())

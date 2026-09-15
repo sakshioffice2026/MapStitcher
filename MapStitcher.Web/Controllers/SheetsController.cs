@@ -18,6 +18,7 @@ namespace MapStitcher.Web.Controllers
         private readonly IStitchOrchestrationService _stitchService;
         private readonly ICadastralExportService _exportService;
         private readonly ISvgMosaicExportService _svgExportService;
+        private readonly IJigsawStitchService _jigsawService;
         private readonly IWebHostEnvironment _env;
 
         private static readonly string[] AllowedExtensions = { ".dwg", ".dxf" };
@@ -33,6 +34,7 @@ namespace MapStitcher.Web.Controllers
             IStitchOrchestrationService stitchService,
             ICadastralExportService exportService,
             ISvgMosaicExportService svgExportService,
+            IJigsawStitchService jigsawService,
             IWebHostEnvironment env)
         {
             _sheetRepo = sheetRepo;
@@ -44,6 +46,7 @@ namespace MapStitcher.Web.Controllers
             _mergeService = mergeService;
             _placementService = placementService;
             _stitchService = stitchService;
+            _jigsawService = jigsawService;
             _env = env;
         }
 
@@ -283,6 +286,40 @@ namespace MapStitcher.Web.Controllers
 
             TempData["Success"] = $"Stitched {result.MergedCount}/{result.TotalSheets} sheets.";
             return RedirectToAction("Workspace", new { projectId });
+        }
+
+        // Single-button entry point: extracts sheet index/row-col metadata,
+        // builds the virtual grid (preserving gaps for missing sheets), fully
+        // clones every entity from each present sheet into a master DXF at its
+        // grid-offset position, and returns the merged file for download.
+        [HttpPost]
+        public async Task<IActionResult> MergeSheets(int projectId, int columnsPerRow)
+        {
+            var project = await _projectRepo.GetByIdAsync(projectId);
+            if (project == null)
+                return NotFound("Invalid ProjectID.");
+
+            var outputRoot = Path.Combine(_env.WebRootPath, "exports");
+            var result = await _jigsawService.MergeSheetsAsync(projectId, columnsPerRow, outputRoot);
+
+            if (!result.Success || result.OutputFilePath == null)
+            {
+                TempData["Error"] = result.Errors.Count > 0
+                    ? string.Join(" | ", result.Errors)
+                    : "Jigsaw merge failed.";
+                return RedirectToAction("Workspace", new { projectId });
+            }
+
+            var fileBytes = await System.IO.File.ReadAllBytesAsync(result.OutputFilePath);
+            var fileName = Path.GetFileName(result.OutputFilePath);
+
+            TempData["Success"] =
+                $"Jigsaw merge complete: {result.PlacedCount}/{result.TotalSlots} slots placed, {result.MissingCount} gap(s) preserved.";
+
+            if (result.Errors.Count > 0)
+                TempData["Error"] = string.Join(" | ", result.Errors);
+
+            return File(fileBytes, "application/dxf", fileName);
         }
 
         [HttpGet]

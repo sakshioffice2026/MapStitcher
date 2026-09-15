@@ -629,6 +629,59 @@
 
 
     // =========================================================
+    // MERGE SHEETS (jigsaw full-entity DXF export)
+    // =========================================================
+
+    window.mergeSheets =
+        function () {
+
+            const columnsPerRow =
+                window.prompt(
+                    'Columns per row in the sheet index grid:',
+                    '5'
+                );
+
+
+            if (columnsPerRow === null) {
+                return;
+            }
+
+
+            const parsed =
+                parseInt(
+                    columnsPerRow,
+                    10
+                );
+
+
+            if (!Number.isInteger(parsed) || parsed <= 0) {
+                window.alert(
+                    'Enter a whole number greater than zero.'
+                );
+                return;
+            }
+
+
+            const input =
+                document.getElementById(
+                    'merge-sheets-columns-per-row'
+                );
+
+            const form =
+                document.getElementById(
+                    'form-merge-sheets'
+                );
+
+
+            if (input && form) {
+                input.value = parsed;
+                form.submit();
+            }
+
+        };
+
+
+    // =========================================================
     // REMOVE SHEET
     // =========================================================
 
