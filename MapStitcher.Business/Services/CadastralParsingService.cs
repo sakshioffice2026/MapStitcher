@@ -27,10 +27,52 @@ namespace MapStitcher.Business.Services
         private const double SpatialThreshold = 5.0;
         private const string AdjacentSheetLayerName = "Text_Adjacent_No";
 
+        // Layer that carries the sheet's title block, including the small
+        // plus-shaped adjacency index box (this sheet's own number plus up to
+        // 4 neighbor sheet numbers, one per cardinal direction).
+        private const string TitleBlockLayerName = "Sym_Title";
+
+        // Layers that are print/plot scaffolding (A0/A1 scale rulers, 20x20
+        // reference grid) rather than real survey geometry. These sit at an
+        // arbitrary offset far from the actual drawing and, if included,
+        // blow the sheet's extents up to many times the true size and get
+        // saved as bogus "boundary" rectangles. Excluded from both extent
+        // computation and boundary/shape extraction.
+        private static readonly HashSet<string> NonSurveyLayers = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Grid",
+            "Line_20_20_Grid",
+            "Image"
+        };
+
+        // Layers that actually represent the sheet's own boundary (as opposed
+        // to individual plot outlines, the legend, or the print frame). Used
+        // for the "Shape" (rectangle) check — we only judge sheet shape from
+        // geometry drawn on these layers.
+        private static readonly HashSet<string> SheetBoundaryLayers = new(StringComparer.OrdinalIgnoreCase)
+        {
+            "Poly_Survey_Bndry",
+            "Poly_Village_Bndry"
+        };
+
+        // How far (in drawing units) a candidate neighbor number may sit from
+        // the sheet's own number in the title-block index box before it's
+        // considered unrelated text rather than part of the cross layout.
+        private const double IndexBoxProximity = 250.0;
+
+        // Tolerance, in degrees, for treating a boundary's corner angle as
+        // a right angle when deciding whether it is a clean rectangle.
+        private const double RectangleAngleToleranceDegrees = 2.0;
+
         // Matches "लागू ... शिट ... नं ... <digits>" allowing arbitrary whitespace/punctuation
         // between the words, as produced by CAD text entry (e.g. "लागू    शिट     नं .   3").
         private static readonly Regex AdjacentSheetPattern =
             new Regex(@"लागू.*?शिट.*?नं.*?(\d+)", RegexOptions.Compiled);
+
+        // A title-block index-box cell holds nothing but a bare sheet number
+        // (e.g. "1", "23"), unlike the surrounding title text.
+        private static readonly Regex BareNumberPattern =
+            new Regex(@"^\d{1,6}$", RegexOptions.Compiled);
 
         private static readonly GeometryFactory _geomFactory = new GeometryFactory(new PrecisionModel(), 0);
 
@@ -77,14 +119,30 @@ namespace MapStitcher.Business.Services
             // Pass 2: Collect cross-hair tie-point marker positions (block inserts)
             var rawPoints = new List<(double X, double Y)>();
 
+            // Pass 3: Collect bare-number labels from the title-block layer —
+            // these are the sheet's own number plus its plus-shaped index-box
+            // neighbor numbers (N/S/E/W). Resolved into directions after the
+            // main loop, once we have every candidate's position.
+            var titleBlockNumbers = new List<(string Value, double X, double Y)>();
+
+            // Boundary geometry actually drawn on the sheet's own boundary
+            // layers (as opposed to plot outlines, legend boxes, or the
+            // print-frame rectangle) — used for the rectangle "Shape" check.
+            var sheetBoundaryRings = new List<List<Coordinate>>();
+
             foreach (var entity in document.Entities)
             {
+                var layerName = entity.Layer?.Name;
+
                 switch (entity)
                 {
                     case TextEntity text:
+                        if (string.Equals(layerName, TitleBlockLayerName, StringComparison.OrdinalIgnoreCase))
+                            CollectTitleBlockNumber(text.Value, text.InsertPoint.X, text.InsertPoint.Y, titleBlockNumbers);
+
                         ExtractTextCandidate(
                             text.Value,
-                            text.Layer?.Name,
+                            layerName,
                             text.InsertPoint.X,
                             text.InsertPoint.Y,
                             sheet,
@@ -92,9 +150,12 @@ namespace MapStitcher.Business.Services
                         break;
 
                     case MText mtext:
+                        if (string.Equals(layerName, TitleBlockLayerName, StringComparison.OrdinalIgnoreCase))
+                            CollectTitleBlockNumber(mtext.Value, mtext.InsertPoint.X, mtext.InsertPoint.Y, titleBlockNumbers);
+
                         ExtractTextCandidate(
                             mtext.Value,
-                            mtext.Layer?.Name,
+                            layerName,
                             mtext.InsertPoint.X,
                             mtext.InsertPoint.Y,
                             sheet,
@@ -106,20 +167,36 @@ namespace MapStitcher.Business.Services
                         break;
 
                     case LwPolyline lwPoly:
+                        // Skip print-frame / reference-grid rectangles entirely —
+                        // they are not survey geometry and must never become a
+                        // tie-point-bearing "boundary".
+                        if (NonSurveyLayers.Contains(layerName ?? string.Empty))
+                            break;
+
                         boundaryCandidateCount++;
-                        await ProcessBoundaryAsync(
-                            lwPoly.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)),
-                            sheet);
+                        var lwCoords = lwPoly.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)).ToList();
+                        await ProcessBoundaryAsync(lwCoords, sheet);
+
+                        if (SheetBoundaryLayers.Contains(layerName ?? string.Empty))
+                            sheetBoundaryRings.Add(lwCoords);
                         break;
 
                     case Polyline2D poly2d:
+                        if (NonSurveyLayers.Contains(layerName ?? string.Empty))
+                            break;
+
                         boundaryCandidateCount++;
-                        await ProcessBoundaryAsync(
-                            poly2d.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)),
-                            sheet);
+                        var poly2dCoords = poly2d.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)).ToList();
+                        await ProcessBoundaryAsync(poly2dCoords, sheet);
+
+                        if (SheetBoundaryLayers.Contains(layerName ?? string.Empty))
+                            sheetBoundaryRings.Add(poly2dCoords);
                         break;
                 }
             }
+
+            ResolveIndexBoxNeighbors(titleBlockNumbers, sheet);
+            sheet.BoundaryIsRectangle = DetermineIsRectangle(sheetBoundaryRings);
 
             if (boundaryCandidateCount == 0)
             {
@@ -196,12 +273,15 @@ namespace MapStitcher.Business.Services
             await _sheetRepo.SaveChangesAsync();
         }
 
-        // Computes true CAD extents from every ModelSpace entity (not just
-        // closed LwPolyline/Polyline2D boundaries), so the UI viewer has
-        // reliable bounds even when the sheet's boundary is drawn with LINE,
-        // ARC, SPLINE, HATCH, or block-insert geometry. Falls back to
-        // HasGeometry = false with zeroed bounds when no entity yields a
-        // finite bounding box, instead of leaving the sheet with no
+        // Computes true CAD extents from every real-survey ModelSpace entity
+        // (not just closed LwPolyline/Polyline2D boundaries), so the UI
+        // viewer has reliable bounds even when the sheet's boundary is drawn
+        // with LINE, ARC, SPLINE, HATCH, or block-insert geometry. Entities
+        // on print/plot scaffolding layers (NonSurveyLayers) are skipped —
+        // otherwise a scale-reference block pasted far outside the actual
+        // drawing inflates the sheet to many times its real size. Falls back
+        // to HasGeometry = false with zeroed bounds when no surviving entity
+        // yields a finite bounding box, instead of leaving the sheet with no
         // usable extents at all.
         private void ComputeSheetExtents(CadDocument document, SurveySheet sheet)
         {
@@ -211,6 +291,9 @@ namespace MapStitcher.Business.Services
 
             foreach (var entity in document.Entities)
             {
+                if (NonSurveyLayers.Contains(entity.Layer?.Name ?? string.Empty))
+                    continue;
+
                 BoundingBox box;
                 try
                 {
@@ -341,6 +424,146 @@ namespace MapStitcher.Business.Services
             // and tie-point labels, without which merge and grid placement fail.
             if (rawText.Any(char.IsDigit) && rawText.Length >= 2 && rawText.Length <= 30)
                 candidates.Add((rawText.Trim(), x, y));
+        }
+
+        // Records a title-block text as a neighbor-number candidate if, once
+        // decoded, it is nothing but digits (e.g. "1", "23"). Title text like
+        // "शीट क्र .1)" or "मौजा - शाहापूर" never matches, so the title/caption
+        // strings around the index box are naturally excluded.
+        private void CollectTitleBlockNumber(
+            string? rawText,
+            double x, double y,
+            List<(string Value, double X, double Y)> titleBlockNumbers)
+        {
+            if (string.IsNullOrWhiteSpace(rawText))
+                return;
+
+            var decoded = DxfUnicodeEscapeDecoder.Decode(rawText).Trim();
+            if (BareNumberPattern.IsMatch(decoded))
+                titleBlockNumbers.Add((decoded, x, y));
+        }
+
+        // The title-block index box is a plus/cross layout: the sheet's own
+        // number sits at the center, and up to 4 neighbor sheet numbers sit
+        // directly above/below/left/right of it — one cell is simply absent
+        // (no TEXT entity at all) wherever there is no neighbor (edge of the
+        // village). The "self" cell is identified by matching sheet.SheetNumber;
+        // every other bare-number candidate within IndexBoxProximity of it is
+        // then classified by whichever axis (X or Y) dominates the offset.
+        private void ResolveIndexBoxNeighbors(
+            List<(string Value, double X, double Y)> titleBlockNumbers,
+            SurveySheet sheet)
+        {
+            if (string.IsNullOrWhiteSpace(sheet.SheetNumber))
+                return;
+
+            var self = titleBlockNumbers.FirstOrDefault(c =>
+                string.Equals(c.Value, sheet.SheetNumber.Trim(), StringComparison.Ordinal));
+
+            if (self.Value == null)
+            {
+                _logger?.LogInformation(
+                    "Sheet {SheetId}: no title-block index-box cell matched SheetNumber '{SheetNumber}'; " +
+                    "adjacency neighbors were not extracted from the DWG.",
+                    sheet.SheetID, sheet.SheetNumber);
+                return;
+            }
+
+            (string Value, double Distance)? north = null, south = null, east = null, west = null;
+
+            foreach (var candidate in titleBlockNumbers)
+            {
+                if (ReferenceEquals(candidate.Value, self.Value) && candidate.X == self.X && candidate.Y == self.Y)
+                    continue;
+
+                double dx = candidate.X - self.X;
+                double dy = candidate.Y - self.Y;
+                double distance = Math.Sqrt(dx * dx + dy * dy);
+
+                if (distance > IndexBoxProximity)
+                    continue;
+
+                if (Math.Abs(dy) >= Math.Abs(dx))
+                {
+                    if (dy > 0 && (north == null || distance < north.Value.Distance))
+                        north = (candidate.Value, distance);
+                    else if (dy < 0 && (south == null || distance < south.Value.Distance))
+                        south = (candidate.Value, distance);
+                }
+                else
+                {
+                    if (dx > 0 && (east == null || distance < east.Value.Distance))
+                        east = (candidate.Value, distance);
+                    else if (dx < 0 && (west == null || distance < west.Value.Distance))
+                        west = (candidate.Value, distance);
+                }
+            }
+
+            sheet.NeighborSheetNumberNorth = north?.Value;
+            sheet.NeighborSheetNumberSouth = south?.Value;
+            sheet.NeighborSheetNumberEast = east?.Value;
+            sheet.NeighborSheetNumberWest = west?.Value;
+        }
+
+        // "Shape" check: does the sheet's own boundary (drawn on
+        // SheetBoundaryLayers only — never the print frame, legend, or
+        // individual plot outlines) resolve to a clean rectangle? Used
+        // upstream to gate a sheet out of auto-merge and into manual review
+        // when its extracted boundary is irregular, which usually means the
+        // boundary-polygon extraction picked up the wrong entity.
+        private bool DetermineIsRectangle(List<List<Coordinate>> boundaryRings)
+        {
+            if (boundaryRings.Count == 0)
+                return false;
+
+            // Judge the largest ring — the sheet's outer boundary — rather
+            // than an arbitrary one, in case more than one shape was found
+            // on a boundary layer.
+            var ring = boundaryRings.OrderByDescending(RingArea).First();
+
+            var pts = new List<Coordinate>(ring);
+            if (pts.Count > 1 && pts[0].Equals2D(pts[^1]))
+                pts.RemoveAt(pts.Count - 1);
+
+            if (pts.Count != 4)
+                return false;
+
+            for (int i = 0; i < pts.Count; i++)
+            {
+                var prev = pts[(i - 1 + pts.Count) % pts.Count];
+                var curr = pts[i];
+                var next = pts[(i + 1) % pts.Count];
+
+                var v1 = new Coordinate(prev.X - curr.X, prev.Y - curr.Y);
+                var v2 = new Coordinate(next.X - curr.X, next.Y - curr.Y);
+
+                double dot = v1.X * v2.X + v1.Y * v2.Y;
+                double mag1 = Math.Sqrt(v1.X * v1.X + v1.Y * v1.Y);
+                double mag2 = Math.Sqrt(v2.X * v2.X + v2.Y * v2.Y);
+
+                if (mag1 == 0 || mag2 == 0)
+                    return false;
+
+                double cosAngle = Math.Clamp(dot / (mag1 * mag2), -1.0, 1.0);
+                double angleDegrees = Math.Acos(cosAngle) * (180.0 / Math.PI);
+
+                if (Math.Abs(angleDegrees - 90.0) > RectangleAngleToleranceDegrees)
+                    return false;
+            }
+
+            return true;
+        }
+
+        private static double RingArea(List<Coordinate> ring)
+        {
+            double area = 0;
+            for (int i = 0; i < ring.Count; i++)
+            {
+                var a = ring[i];
+                var b = ring[(i + 1) % ring.Count];
+                area += a.X * b.Y - b.X * a.Y;
+            }
+            return Math.Abs(area) / 2.0;
         }
 
         private async Task ProcessBoundaryAsync(IEnumerable<Coordinate> rawCoords, SurveySheet sheet)

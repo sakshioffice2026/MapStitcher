@@ -23,6 +23,23 @@
         public double BoundsMaxY { get; set; }
         public bool HasGeometry { get; set; }
 
+        // Plus-shaped title-block index-box neighbors, read from the DWG's
+        // Sym_Title layer: the sheet number sitting directly above/below/
+        // left/right of this sheet's own number. Null when there is no
+        // neighbor in that direction (edge of the village) or when the
+        // index box could not be read.
+        public string? NeighborSheetNumberNorth { get; set; }
+        public string? NeighborSheetNumberSouth { get; set; }
+        public string? NeighborSheetNumberEast { get; set; }
+        public string? NeighborSheetNumberWest { get; set; }
+
+        // "Shape" check result: true only when this sheet's own boundary
+        // (Poly_Survey_Bndry / Poly_Village_Bndry layers) resolves to a
+        // clean 4-corner rectangle. False (including when no boundary was
+        // found at all) means the sheet should be blocked from auto-merge
+        // and flagged for manual review.
+        public bool BoundaryIsRectangle { get; set; }
+
         // Preview-only translation offsets computed by ArrangeSheetsGrid.
         // Consumed by ExportMasterDxf to place cloned entities without overlap.
         public double OffsetX { get; set; }

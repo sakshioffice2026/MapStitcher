@@ -415,12 +415,33 @@
                 }
                 return response.json();
             })
-            .then(sheetsWithBounds => {
+            .then(rawSheets => {
 
                 loading.style.display = 'none';
 
+                const sheetsWithBounds =
+                    Array.isArray(rawSheets) ? rawSheets : [];
+
+                const norm = s => ({
+                    sheetId: s.sheetId ?? s.SheetId ?? s.SheetID,
+                    sheetNumber: s.sheetNumber ?? s.SheetNumber,
+                    hasGeometry: s.hasGeometry ?? s.HasGeometry ?? false,
+                    minX: Number(s.minX ?? s.MinX ?? s.BoundsMinX ?? 0),
+                    minY: Number(s.minY ?? s.MinY ?? s.BoundsMinY ?? 0),
+                    maxX: Number(s.maxX ?? s.MaxX ?? s.BoundsMaxX ?? 0),
+                    maxY: Number(s.maxY ?? s.MaxY ?? s.BoundsMaxY ?? 0),
+                    offsetX: Number(s.offsetX ?? s.OffsetX ?? 0),
+                    offsetY: Number(s.offsetY ?? s.OffsetY ?? 0)
+                });
+
+                const normalized =
+                    sheetsWithBounds.map(norm);
+
                 const withGeometry =
-                    sheetsWithBounds.filter(s => s.hasGeometry);
+                    normalized.filter(s =>
+                        s.hasGeometry &&
+                        (s.maxX !== s.minX || s.maxY !== s.minY)
+                    );
 
                 if (withGeometry.length === 0) {
                     empty.style.display = 'flex';
@@ -727,8 +748,9 @@
     // MERGE SHEETS (jigsaw full-entity DXF export)
     // =========================================================
 
-    window.mergeSheets =
-        function () {
+    function mergeSheets() {
+
+        try {
 
             const columnsPerRow =
                 window.prompt(
@@ -768,12 +790,32 @@
                 );
 
 
-            if (input && form) {
-                input.value = parsed;
-                form.submit();
+            if (!input || !form) {
+                window.alert(
+                    'Merge form is not present on this page.'
+                );
+                return;
             }
 
-        };
+            input.value = parsed;
+            form.submit();
+
+        } catch (err) {
+
+            console.error(
+                'mergeSheets failed:',
+                err
+            );
+
+            window.alert(
+                'Merge Sheets failed: ' + err.message
+            );
+
+        }
+
+    }
+
+    window.mergeSheets = mergeSheets;
 
 
     // =========================================================
