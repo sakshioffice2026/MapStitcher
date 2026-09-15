@@ -1,4 +1,4 @@
-﻿using ACadSharp;
+using ACadSharp;
 using ACadSharp.Entities;
 using ACadSharp.IO;
 using MapStitcher.Business.Contracts;
@@ -7,6 +7,7 @@ using MapStitcher.Repositories.Contracts;
 using MapStitcher.Utilities;
 using Microsoft.Extensions.Logging;
 using NetTopologySuite.Geometries;
+using System.Reflection;
 using System.Text.RegularExpressions;
 
 namespace MapStitcher.Business.Services
@@ -19,19 +20,15 @@ namespace MapStitcher.Business.Services
         private readonly string _uploadRootPath;
         private readonly ILogger<CadastralParsingService>? _logger;
 
-        // Counts boundary-capable entities skipped this parse run because they
-        // had fewer than 3 vertices, purely for diagnostics/logging.
         private int _skippedShortPolylineCount;
-
         private const double SpatialThreshold = 5.0;
         private const string AdjacentSheetLayerName = "Text_Adjacent_No";
 
-        // Matches "लागू ... शिट ... नं ... <digits>" allowing arbitrary whitespace/punctuation
-        // between the words, as produced by CAD text entry (e.g. "लागू    शिट     नं .   3").
         private static readonly Regex AdjacentSheetPattern =
             new Regex(@"लागू.*?शिट.*?नं.*?(\d+)", RegexOptions.Compiled);
 
-        private static readonly GeometryFactory _geomFactory = new GeometryFactory(new PrecisionModel(), 0);
+        private static readonly GeometryFactory _geomFactory =
+            new GeometryFactory(new PrecisionModel(), 0);
 
         public CadastralParsingService(
             ISurveySheetRepository sheetRepo,
@@ -49,9 +46,8 @@ namespace MapStitcher.Business.Services
 
         public async Task ParseSheetAsync(int sheetId)
         {
-            var sheet = await _sheetRepo.GetByIdAsync(sheetId);
-            if (sheet == null)
-                throw new InvalidOperationException($"SurveySheet {sheetId} not found.");
+            var sheet = await _sheetRepo.GetByIdAsync(sheetId)
+                ?? throw new InvalidOperationException($"SurveySheet {sheetId} not found.");
 
             CadDocument document;
             try
@@ -61,42 +57,40 @@ namespace MapStitcher.Business.Services
             catch (Exception ex)
             {
                 sheet.Status = SheetStatus.Failed;
+                sheet.FailureReason = ex.Message;
                 await _sheetRepo.SaveChangesAsync();
                 throw new InvalidOperationException($"Failed to parse CAD file: {ex.Message}", ex);
             }
 
             sheet.DwgVersion = document.Header?.Version.ToString();
+            sheet.FailureReason = null;
             _skippedShortPolylineCount = 0;
-            int boundaryCandidateCount = 0;
 
-            // Pass 1: Collect text candidates with their InsertPoint positions
             var textCandidates = new List<(string Label, double X, double Y)>();
-
-            // Pass 2: Collect cross-hair tie-point marker positions (block inserts)
             var rawPoints = new List<(double X, double Y)>();
+            var extent = new CadExtent();
+            var hasExplicitBoundary = false;
+            var entityCount = 0;
 
+            // ACadSharp exposes the complete model-space entity collection and every
+            // entity has GetBoundingBox(). We use the exact polygon where a usable
+            // closed/open polyline exists, and otherwise persist the union of all
+            // entity extents so the viewer never starts with an empty geometry state.
             foreach (var entity in document.Entities)
             {
+                entityCount++;
+                TryAccumulateEntityExtent(entity, extent);
+
                 switch (entity)
                 {
                     case TextEntity text:
-                        ExtractTextCandidate(
-                            text.Value,
-                            text.Layer?.Name,
-                            text.InsertPoint.X,
-                            text.InsertPoint.Y,
-                            sheet,
-                            textCandidates);
+                        ExtractTextCandidate(text.Value, text.Layer?.Name,
+                            text.InsertPoint.X, text.InsertPoint.Y, sheet, textCandidates);
                         break;
 
                     case MText mtext:
-                        ExtractTextCandidate(
-                            mtext.Value,
-                            mtext.Layer?.Name,
-                            mtext.InsertPoint.X,
-                            mtext.InsertPoint.Y,
-                            sheet,
-                            textCandidates);
+                        ExtractTextCandidate(mtext.Value, mtext.Layer?.Name,
+                            mtext.InsertPoint.X, mtext.InsertPoint.Y, sheet, textCandidates);
                         break;
 
                     case Insert insert:
@@ -104,43 +98,50 @@ namespace MapStitcher.Business.Services
                         break;
 
                     case LwPolyline lwPoly:
-                        boundaryCandidateCount++;
-                        await ProcessBoundaryAsync(
-                            lwPoly.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)),
-                            sheet);
+                        if (await ProcessBoundaryAsync(
+                                lwPoly.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)),
+                                sheet))
+                            hasExplicitBoundary = true;
                         break;
 
                     case Polyline2D poly2d:
-                        boundaryCandidateCount++;
-                        await ProcessBoundaryAsync(
-                            poly2d.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)),
-                            sheet);
+                        if (await ProcessBoundaryAsync(
+                                poly2d.Vertices.Select(v => new Coordinate(v.Location.X, v.Location.Y)),
+                                sheet))
+                            hasExplicitBoundary = true;
                         break;
                 }
             }
 
-            if (boundaryCandidateCount == 0)
+            // Many production DWGs contain boundaries as LINE/SPLINE/HATCH/blocks
+            // rather than LWPOLYLINE. A document-level extent is still reliable for
+            // preview and placement, so materialize it as a renderable polygon when
+            // no real polyline boundary was found.
+            if (!hasExplicitBoundary && extent.IsValid)
             {
-                _logger?.LogWarning(
-                    "Sheet {SheetId}: no LwPolyline/Polyline2D entities found in the CAD file. " +
-                    "The boundary may be drawn with an unsupported entity type (e.g. LINE, SPLINE, 3D POLYLINE, HATCH) " +
-                    "or on a block insert.",
-                    sheetId);
-            }
-            else if (_skippedShortPolylineCount == boundaryCandidateCount)
-            {
-                _logger?.LogWarning(
-                    "Sheet {SheetId}: found {Count} polyline entity(ies) but all had fewer than 3 vertices; " +
-                    "no boundary geometry was saved.",
-                    sheetId, boundaryCandidateCount);
+                await AddExtentBoundaryAsync(sheet, extent);
+                _logger?.LogInformation(
+                    "Sheet {SheetId}: persisted CAD extent fallback ({MinX},{MinY})-({MaxX},{MaxY}) from {EntityCount} entities.",
+                    sheetId, extent.MinX, extent.MinY, extent.MaxX, extent.MaxY, entityCount);
             }
 
-            // Pass 3: Greedy unique nearest-neighbor assignment
-            // Each TEXT label can be claimed by at most one POINT, and vice versa —
-            // closest pairs are matched first, preventing one label from being
-            // reused across multiple points (which was corrupting merge accuracy).
+            if (entityCount == 0)
+            {
+                sheet.Status = SheetStatus.Failed;
+                sheet.FailureReason = "CAD file parsed but contains no model-space entities.";
+                await _sheetRepo.SaveChangesAsync();
+                throw new InvalidOperationException(sheet.FailureReason);
+            }
+
+            if (!extent.IsValid && !hasExplicitBoundary)
+            {
+                sheet.Status = SheetStatus.Failed;
+                sheet.FailureReason = "CAD file contains no renderable entity extents.";
+                await _sheetRepo.SaveChangesAsync();
+                throw new InvalidOperationException(sheet.FailureReason);
+            }
+
             var candidatePairs = new List<(int PointIndex, int TextIndex, double Distance)>();
-
             for (int pi = 0; pi < rawPoints.Count; pi++)
             {
                 for (int ti = 0; ti < textCandidates.Count; ti++)
@@ -148,14 +149,12 @@ namespace MapStitcher.Business.Services
                     double distance = Math.Sqrt(
                         Math.Pow(rawPoints[pi].X - textCandidates[ti].X, 2) +
                         Math.Pow(rawPoints[pi].Y - textCandidates[ti].Y, 2));
-
                     if (distance <= SpatialThreshold)
                         candidatePairs.Add((pi, ti, distance));
                 }
             }
 
             candidatePairs.Sort((a, b) => a.Distance.CompareTo(b.Distance));
-
             var assignedLabel = new string?[rawPoints.Count];
             var usedTextIndex = new HashSet<int>();
             var usedPointIndex = new HashSet<int>();
@@ -164,30 +163,28 @@ namespace MapStitcher.Business.Services
             {
                 if (usedPointIndex.Contains(pointIndex) || usedTextIndex.Contains(textIndex))
                     continue;
-
                 assignedLabel[pointIndex] = textCandidates[textIndex].Label;
                 usedPointIndex.Add(pointIndex);
                 usedTextIndex.Add(textIndex);
             }
 
-            int extractedCount = 0;
-
-            for (int pi = 0; pi < rawPoints.Count; pi++)
+            foreach (var point in rawPoints)
             {
-                var tiePoint = new TiePoint
+                var index = rawPoints.IndexOf(point);
+                await _tiePointRepo.AddAsync(new TiePoint
                 {
                     SheetID = sheet.SheetID,
-                    SourceX = rawPoints[pi].X,
-                    SourceY = rawPoints[pi].Y,
-                    PointLabel = assignedLabel[pi],
+                    SourceX = point.X,
+                    SourceY = point.Y,
+                    PointLabel = assignedLabel[index],
                     CreatedDate = DateTime.UtcNow
-                };
-
-                await _tiePointRepo.AddAsync(tiePoint);
-                extractedCount++;
+                });
             }
 
-            sheet.Status = extractedCount > 0 ? SheetStatus.Parsed : SheetStatus.Failed;
+            // Geometry, not tie-point extraction, determines parse success. A valid
+            // DWG with zero INSERT markers must still be immediately renderable.
+            sheet.Status = SheetStatus.Parsed;
+            sheet.FailureReason = null;
 
             await _tiePointRepo.SaveChangesAsync();
             await _boundaryRepo.SaveChangesAsync();
@@ -196,15 +193,12 @@ namespace MapStitcher.Business.Services
 
         private CadDocument LoadDocument(SurveySheet sheet)
         {
-            var fullPath = System.IO.Path.Combine(_uploadRootPath, sheet.FilePath);
-            if (!System.IO.File.Exists(fullPath))
-                throw new System.IO.FileNotFoundException("DWG/DXF file not found on disk.", fullPath);
+            var fullPath = Path.Combine(_uploadRootPath, sheet.FilePath);
+            if (!File.Exists(fullPath))
+                throw new FileNotFoundException("DWG/DXF file not found on disk.", fullPath);
 
-            var ext = System.IO.Path.GetExtension(fullPath).ToLowerInvariant();
-
-            return ext == ".dxf"
-                ? DxfReader.Read(fullPath)
-                : DwgReader.Read(fullPath);
+            var ext = Path.GetExtension(fullPath).ToLowerInvariant();
+            return ext == ".dxf" ? DxfReader.Read(fullPath) : DwgReader.Read(fullPath);
         }
 
         public async Task<List<RawTextDump>> DumpRawTextAsync(int sheetId)
@@ -264,43 +258,124 @@ namespace MapStitcher.Business.Services
                 var match = AdjacentSheetPattern.Match(decoded);
                 if (match.Success)
                     sheet.LaghuReferenceNumber = match.Groups[1].Value;
-
                 return;
             }
 
-            // Accept alphanumeric text containing at least one digit, length 2-30.
-            // This allows "Sheet 5", "Plot 12A", "HOUSE-3" etc. to become candidates
-            // and tie-point labels, without which merge and grid placement fail.
             if (rawText.Any(char.IsDigit) && rawText.Length >= 2 && rawText.Length <= 30)
                 candidates.Add((rawText.Trim(), x, y));
         }
 
-        private async Task ProcessBoundaryAsync(IEnumerable<Coordinate> rawCoords, SurveySheet sheet)
+        private async Task<bool> ProcessBoundaryAsync(
+            IEnumerable<Coordinate> rawCoords,
+            SurveySheet sheet)
         {
             var coords = rawCoords.ToList();
             if (coords.Count < 3)
             {
                 _skippedShortPolylineCount++;
-                _logger?.LogWarning(
-                    "Sheet {SheetId}: skipped a polyline with only {VertexCount} vertex(es); at least 3 are required to form a boundary.",
-                    sheet.SheetID, coords.Count);
-                return;
+                return false;
             }
 
             if (!coords[0].Equals2D(coords[^1]))
                 coords.Add(coords[0]);
 
-            var polygon = _geomFactory.CreatePolygon(coords.ToArray());
-
-            var boundary = new SheetBoundary
+            try
             {
-                SheetID = sheet.SheetID,
-                PlotLabel = null,
-                Geometry = polygon,
-                CreatedDate = DateTime.UtcNow
+                var polygon = _geomFactory.CreatePolygon(coords.ToArray());
+                if (!polygon.IsValid || polygon.Area <= 0)
+                {
+                    _skippedShortPolylineCount++;
+                    return false;
+                }
+
+                await _boundaryRepo.AddAsync(new SheetBoundary
+                {
+                    SheetID = sheet.SheetID,
+                    PlotLabel = null,
+                    Geometry = polygon,
+                    CreatedDate = DateTime.UtcNow
+                });
+                return true;
+            }
+            catch (ArgumentException)
+            {
+                _skippedShortPolylineCount++;
+                return false;
+            }
+        }
+
+        private async Task AddExtentBoundaryAsync(SurveySheet sheet, CadExtent extent)
+        {
+            var coordinates = new[]
+            {
+                new Coordinate(extent.MinX, extent.MinY),
+                new Coordinate(extent.MaxX, extent.MinY),
+                new Coordinate(extent.MaxX, extent.MaxY),
+                new Coordinate(extent.MinX, extent.MaxY),
+                new Coordinate(extent.MinX, extent.MinY)
             };
 
-            await _boundaryRepo.AddAsync(boundary);
+            await _boundaryRepo.AddAsync(new SheetBoundary
+            {
+                SheetID = sheet.SheetID,
+                PlotLabel = "CAD_EXTENT",
+                Geometry = _geomFactory.CreatePolygon(coordinates),
+                CreatedDate = DateTime.UtcNow
+            });
+        }
+
+        private static void TryAccumulateEntityExtent(Entity entity, CadExtent target)
+        {
+            try
+            {
+                var box = entity.GetBoundingBox();
+                if (box == null)
+                    return;
+
+                // Keep this adapter reflection-based so a minor ACadSharp BoundingBox
+                // API shape change does not make the upload pipeline fail to compile.
+                var min = box.GetType().GetProperty("Min")?.GetValue(box);
+                var max = box.GetType().GetProperty("Max")?.GetValue(box);
+                if (min == null || max == null)
+                    return;
+
+                var minX = ReadCoordinate(min, "X");
+                var minY = ReadCoordinate(min, "Y");
+                var maxX = ReadCoordinate(max, "X");
+                var maxY = ReadCoordinate(max, "Y");
+
+                if (minX.HasValue && minY.HasValue && maxX.HasValue && maxY.HasValue)
+                    target.Include(minX.Value, minY.Value, maxX.Value, maxY.Value);
+            }
+            catch
+            {
+                // Proxy/unsupported entities are allowed; other entities still define
+                // the document extent. Do not make one bad entity abort upload.
+            }
+        }
+
+        private static double? ReadCoordinate(object point, string name)
+        {
+            var property = point.GetType().GetProperty(name, BindingFlags.Public | BindingFlags.Instance);
+            var value = property?.GetValue(point);
+            return value == null ? null : Convert.ToDouble(value, System.Globalization.CultureInfo.InvariantCulture);
+        }
+
+        private sealed class CadExtent
+        {
+            public double MinX { get; private set; } = double.MaxValue;
+            public double MinY { get; private set; } = double.MaxValue;
+            public double MaxX { get; private set; } = double.MinValue;
+            public double MaxY { get; private set; } = double.MinValue;
+            public bool IsValid => MinX <= MaxX && MinY <= MaxY;
+
+            public void Include(double minX, double minY, double maxX, double maxY)
+            {
+                MinX = Math.Min(MinX, Math.Min(minX, maxX));
+                MinY = Math.Min(MinY, Math.Min(minY, maxY));
+                MaxX = Math.Max(MaxX, Math.Max(minX, maxX));
+                MaxY = Math.Max(MaxY, Math.Max(minY, maxY));
+            }
         }
     }
 }
