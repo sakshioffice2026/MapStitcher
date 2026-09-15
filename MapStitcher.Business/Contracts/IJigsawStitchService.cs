@@ -1,4 +1,4 @@
-﻿namespace MapStitcher.Business.Contracts
+namespace MapStitcher.Business.Contracts
 {
     public class JigsawSlot
     {
@@ -22,9 +22,15 @@
 
     public interface IJigsawStitchService
     {
-        Task<JigsawMergeResult> MergeSheetsAsync(
-            int projectId,
-            int columnsPerRow,
-            string outputRootPath);
+        // Calculates and persists GridRow/GridCol and TransformTranslateX/Y only.
+        // This is the UI preview/layout operation and never creates a download file.
+        Task<JigsawMergeResult> ArrangeSheetsAsync(int projectId, int columnsPerRow);
+
+        // Exports the already-arranged sheets by cloning every source entity and
+        // applying the persisted transform. Export is intentionally separate from Arrange.
+        Task<string> ExportArrangedSheetsAsync(int projectId, string outputRootPath);
+
+        // Backward-compatible combined operation for existing callers.
+        Task<JigsawMergeResult> MergeSheetsAsync(int projectId, int columnsPerRow, string outputRootPath);
     }
 }
