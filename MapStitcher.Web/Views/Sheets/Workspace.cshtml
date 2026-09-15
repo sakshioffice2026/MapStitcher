@@ -761,6 +761,9 @@
 
         window.workspaceConfig = {
 
+            projectId:
+                @Model.ProjectID,
+
             sheets:
                 @Html.Raw(
                     System.Text.Json.JsonSerializer.Serialize(
@@ -790,7 +793,13 @@
                     '@Url.Action("PlaceSheet", "Sheets")',
 
                 svgPreview:
-                    '@Url.Action("SvgPreview", "Sheets", new { projectId = Model.ProjectID })'
+                    '@Url.Action("SvgPreview", "Sheets", new { projectId = Model.ProjectID })',
+
+                sheetBounds:
+                    '@Url.Action("GetSheetBounds", "Sheets")',
+
+                projectSheetBounds:
+                    '@Url.Action("GetProjectSheetBounds", "Sheets", new { projectId = Model.ProjectID })'
             }
 
         };

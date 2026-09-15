@@ -14,6 +14,20 @@
         public int? GridRow { get; set; }
         public int? GridCol { get; set; }
 
+        // True CAD extents computed from every ModelSpace entity at parse time.
+        // Used by the UI viewer to render/fit geometry immediately, independent
+        // of whether closed-polygon boundary extraction succeeded.
+        public double BoundsMinX { get; set; }
+        public double BoundsMinY { get; set; }
+        public double BoundsMaxX { get; set; }
+        public double BoundsMaxY { get; set; }
+        public bool HasGeometry { get; set; }
+
+        // Preview-only translation offsets computed by ArrangeSheetsGrid.
+        // Consumed by ExportMasterDxf to place cloned entities without overlap.
+        public double OffsetX { get; set; }
+        public double OffsetY { get; set; }
+
         // Persisted similarity transform (identity = untouched/base sheet)
         public double TransformRotation { get; set; } = 0.0;
         public double TransformScale { get; set; } = 1.0;

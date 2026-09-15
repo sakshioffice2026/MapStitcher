@@ -1,6 +1,7 @@
 ﻿using ACadSharp;
 using ACadSharp.Entities;
 using ACadSharp.IO;
+using CSMath;
 using MapStitcher.Business.Contracts;
 using MapStitcher.Database;
 using MapStitcher.Repositories.Contracts;
@@ -66,6 +67,7 @@ namespace MapStitcher.Business.Services
             }
 
             sheet.DwgVersion = document.Header?.Version.ToString();
+            ComputeSheetExtents(document, sheet);
             _skippedShortPolylineCount = 0;
             int boundaryCandidateCount = 0;
 
@@ -193,6 +195,72 @@ namespace MapStitcher.Business.Services
             await _boundaryRepo.SaveChangesAsync();
             await _sheetRepo.SaveChangesAsync();
         }
+
+        // Computes true CAD extents from every ModelSpace entity (not just
+        // closed LwPolyline/Polyline2D boundaries), so the UI viewer has
+        // reliable bounds even when the sheet's boundary is drawn with LINE,
+        // ARC, SPLINE, HATCH, or block-insert geometry. Falls back to
+        // HasGeometry = false with zeroed bounds when no entity yields a
+        // finite bounding box, instead of leaving the sheet with no
+        // usable extents at all.
+        private void ComputeSheetExtents(CadDocument document, SurveySheet sheet)
+        {
+            double minX = double.MaxValue, minY = double.MaxValue;
+            double maxX = double.MinValue, maxY = double.MinValue;
+            bool found = false;
+
+            foreach (var entity in document.Entities)
+            {
+                BoundingBox box;
+                try
+                {
+                    box = entity.GetBoundingBox();
+                }
+                catch (Exception ex)
+                {
+                    _logger?.LogDebug(
+                        "Sheet {SheetId}: entity {EntityType} bounding box unavailable ({Message}); skipped for extents.",
+                        sheet.SheetID, entity.GetType().Name, ex.Message);
+                    continue;
+                }
+
+                if (!IsFinite(box.Min.X) || !IsFinite(box.Min.Y) ||
+                    !IsFinite(box.Max.X) || !IsFinite(box.Max.Y))
+                    continue;
+
+                if (box.Min.X > box.Max.X || box.Min.Y > box.Max.Y)
+                    continue;
+
+                if (box.Min.X < minX) minX = box.Min.X;
+                if (box.Min.Y < minY) minY = box.Min.Y;
+                if (box.Max.X > maxX) maxX = box.Max.X;
+                if (box.Max.Y > maxY) maxY = box.Max.Y;
+                found = true;
+            }
+
+            if (!found)
+            {
+                sheet.HasGeometry = false;
+                sheet.BoundsMinX = 0;
+                sheet.BoundsMinY = 0;
+                sheet.BoundsMaxX = 0;
+                sheet.BoundsMaxY = 0;
+
+                _logger?.LogWarning(
+                    "Sheet {SheetId}: no entity produced a finite bounding box; extents fell back to (0,0,0,0).",
+                    sheet.SheetID);
+
+                return;
+            }
+
+            sheet.HasGeometry = true;
+            sheet.BoundsMinX = minX;
+            sheet.BoundsMinY = minY;
+            sheet.BoundsMaxX = maxX;
+            sheet.BoundsMaxY = maxY;
+        }
+
+        private static bool IsFinite(double value) => !double.IsNaN(value) && !double.IsInfinity(value);
 
         private CadDocument LoadDocument(SurveySheet sheet)
         {

@@ -330,9 +330,7 @@
                     !svgText.includes('<svg')
                 ) {
 
-                    empty.style.display =
-                        'flex';
-
+                    renderBoundsFallback(content, loading, empty);
                     return;
 
                 }
@@ -350,9 +348,7 @@
 
                 if (!svg) {
 
-                    empty.style.display =
-                        'flex';
-
+                    renderBoundsFallback(content, loading, empty);
                     return;
 
                 }
@@ -377,18 +373,117 @@
                     error
                 );
 
+                renderBoundsFallback(content, loading, empty);
 
-                loading.style.display =
-                    'none';
+            });
 
-
-                empty.style.display =
-                    'flex';
+    }
 
 
-                empty.textContent =
-                    'Unable to load CAD geometry.';
+    // =========================================================
+    // BOUNDS FALLBACK
+    // =========================================================
+    //
+    // Used when SvgPreview has no boundary-polygon geometry (e.g. the
+    // sheet's boundary was drawn with entity types the polygon pass does
+    // not extract). Renders each sheet's true extents (BoundsMinX/MinY/
+    // MaxX/MaxY, computed from ALL ModelSpace entities at parse time) as a
+    // simple rectangle, translated by its GridRow/GridCol/OffsetX/OffsetY,
+    // so the viewer still shows real geometry dimensions instead of an
+    // empty panel.
 
+    function renderBoundsFallback(content, loading, empty) {
+
+        if (!config.urls.projectSheetBounds) {
+            loading.style.display = 'none';
+            empty.style.display = 'flex';
+            return;
+        }
+
+        fetch(
+            config.urls.projectSheetBounds,
+            {
+                method: 'GET',
+                headers: {
+                    'X-Requested-With': 'XMLHttpRequest'
+                }
+            }
+        )
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error('Bounds fetch failed: ' + response.status);
+                }
+                return response.json();
+            })
+            .then(sheetsWithBounds => {
+
+                loading.style.display = 'none';
+
+                const withGeometry =
+                    sheetsWithBounds.filter(s => s.hasGeometry);
+
+                if (withGeometry.length === 0) {
+                    empty.style.display = 'flex';
+                    empty.textContent = 'No CAD boundary geometry is available.';
+                    return;
+                }
+
+                let minX = Infinity, minY = Infinity;
+                let maxX = -Infinity, maxY = -Infinity;
+
+                const rects = withGeometry.map(s => {
+                    const x1 = s.minX + s.offsetX;
+                    const y1 = s.minY + s.offsetY;
+                    const x2 = s.maxX + s.offsetX;
+                    const y2 = s.maxY + s.offsetY;
+
+                    if (x1 < minX) minX = x1;
+                    if (y1 < minY) minY = y1;
+                    if (x2 > maxX) maxX = x2;
+                    if (y2 > maxY) maxY = y2;
+
+                    return { sheetId: s.sheetId, sheetNumber: s.sheetNumber, x1, y1, x2, y2 };
+                });
+
+                const padding = 20;
+                minX -= padding; minY -= padding;
+                maxX += padding; maxY += padding;
+
+                const width = maxX - minX;
+                const height = maxY - minY;
+
+                let svg =
+                    `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${width.toFixed(2)} ${height.toFixed(2)}" font-family="sans-serif">`;
+
+                rects.forEach(r => {
+                    const rx = r.x1 - minX;
+                    const ry = maxY - r.y2; // flip Y: source is Y-up, SVG is Y-down
+                    const rw = r.x2 - r.x1;
+                    const rh = r.y2 - r.y1;
+
+                    svg +=
+                        `<rect x="${rx.toFixed(2)}" y="${ry.toFixed(2)}" width="${rw.toFixed(2)}" height="${rh.toFixed(2)}" ` +
+                        `fill="#cfe8ff" stroke="#333333" stroke-width="0.6" />` +
+                        `<text x="${(rx + 2).toFixed(2)}" y="${(ry + 6).toFixed(2)}" font-size="4" fill="#111111">Sheet ${r.sheetNumber}</text>`;
+                });
+
+                svg += '</svg>';
+
+                content.innerHTML = svg;
+
+                const svgEl = content.querySelector('svg');
+                if (svgEl) {
+                    cadGeometryLoaded = true;
+                    prepareCadSvg(svgEl);
+                    cadFitToGeometry();
+                }
+
+            })
+            .catch(error => {
+                console.error('Bounds fallback failed:', error);
+                loading.style.display = 'none';
+                empty.style.display = 'flex';
+                empty.textContent = 'Unable to load CAD geometry.';
             });
 
     }

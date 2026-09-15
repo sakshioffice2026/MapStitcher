@@ -19,6 +19,7 @@ namespace MapStitcher.Web.Controllers
         private readonly ICadastralExportService _exportService;
         private readonly ISvgMosaicExportService _svgExportService;
         private readonly IJigsawStitchService _jigsawService;
+        private readonly ISheetGridArrangementService _gridArrangementService;
         private readonly IWebHostEnvironment _env;
 
         private static readonly string[] AllowedExtensions = { ".dwg", ".dxf" };
@@ -35,6 +36,7 @@ namespace MapStitcher.Web.Controllers
             ICadastralExportService exportService,
             ISvgMosaicExportService svgExportService,
             IJigsawStitchService jigsawService,
+            ISheetGridArrangementService gridArrangementService,
             IWebHostEnvironment env)
         {
             _sheetRepo = sheetRepo;
@@ -47,7 +49,88 @@ namespace MapStitcher.Web.Controllers
             _placementService = placementService;
             _stitchService = stitchService;
             _jigsawService = jigsawService;
+            _gridArrangementService = gridArrangementService;
             _env = env;
+        }
+
+        // Isolated download action. Requires the project's sheets to already
+        // have a grid arrangement (set by MergeSheets, which arranges then
+        // exports in one call) or by calling ISheetGridArrangementService
+        // directly from another entry point.
+        [HttpGet]
+        public async Task<IActionResult> ExportMasterDxf(int projectId)
+        {
+            var project = await _projectRepo.GetByIdAsync(projectId);
+            if (project == null)
+                return NotFound("Invalid ProjectID.");
+
+            try
+            {
+                var outputRoot = Path.Combine(_env.WebRootPath, "exports");
+                var filePath = await _exportService.ExportMasterDxfAsync(projectId, outputRoot);
+
+                var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
+                var fileName = Path.GetFileName(filePath);
+
+                return File(fileBytes, "application/dxf", fileName);
+            }
+            catch (Exception ex)
+            {
+                TempData["Error"] = $"Master DXF export failed: {ex.Message}";
+                return RedirectToAction("Workspace", new { projectId });
+            }
+        }
+
+        // Fast, reliable extents for the UI viewer — independent of whether
+        // boundary-polygon extraction produced any SheetBoundary rows.
+        [HttpGet]
+        public async Task<IActionResult> GetSheetBounds(int sheetId)
+        {
+            var sheet = await _sheetRepo.GetByIdAsync(sheetId);
+            if (sheet == null)
+                return NotFound("Sheet not found.");
+
+            return Json(new
+            {
+                sheetId = sheet.SheetID,
+                hasGeometry = sheet.HasGeometry,
+                minX = sheet.BoundsMinX,
+                minY = sheet.BoundsMinY,
+                maxX = sheet.BoundsMaxX,
+                maxY = sheet.BoundsMaxY,
+                offsetX = sheet.OffsetX,
+                offsetY = sheet.OffsetY,
+                gridRow = sheet.GridRow,
+                gridCol = sheet.GridCol
+            });
+        }
+
+        // Same extents as GetSheetBounds, batched for every sheet in the
+        // project in one call. Used by the CAD viewer's client-side fallback
+        // rectangle rendering when SvgPreview has no boundary polygons yet.
+        [HttpGet]
+        public async Task<IActionResult> GetProjectSheetBounds(int projectId)
+        {
+            var project = await _projectRepo.GetByIdAsync(projectId);
+            if (project == null)
+                return NotFound("Invalid ProjectID.");
+
+            var sheets = await _sheetRepo.GetByProjectIdAsync(projectId);
+
+            return Json(sheets.Select(sheet => new
+            {
+                sheetId = sheet.SheetID,
+                sheetNumber = sheet.SheetNumber,
+                hasGeometry = sheet.HasGeometry,
+                minX = sheet.BoundsMinX,
+                minY = sheet.BoundsMinY,
+                maxX = sheet.BoundsMaxX,
+                maxY = sheet.BoundsMaxY,
+                offsetX = sheet.OffsetX,
+                offsetY = sheet.OffsetY,
+                gridRow = sheet.GridRow,
+                gridCol = sheet.GridCol
+            }));
         }
 
         [HttpGet]
@@ -288,10 +371,13 @@ namespace MapStitcher.Web.Controllers
             return RedirectToAction("Workspace", new { projectId });
         }
 
-        // Single-button entry point: extracts sheet index/row-col metadata,
-        // builds the virtual grid (preserving gaps for missing sheets), fully
-        // clones every entity from each present sheet into a master DXF at its
-        // grid-offset position, and returns the merged file for download.
+        // Single-button entry point: computes a non-overlapping grid layout
+        // from each sheet's real bounding box (ArrangeSheetsGrid), then
+        // clones every entity from each sheet's source file at its offset
+        // into one master DXF (ExportMasterDxfAsync), and returns it for
+        // download. Replaces the old index-marker-dependent jigsaw path,
+        // which produced a blank file whenever no sheet had a recognizable
+        // row/col marker.
         [HttpPost]
         public async Task<IActionResult> MergeSheets(int projectId, int columnsPerRow)
         {
@@ -299,27 +385,30 @@ namespace MapStitcher.Web.Controllers
             if (project == null)
                 return NotFound("Invalid ProjectID.");
 
-            var outputRoot = Path.Combine(_env.WebRootPath, "exports");
-            var result = await _jigsawService.MergeSheetsAsync(projectId, columnsPerRow, outputRoot);
-
-            if (!result.Success || result.OutputFilePath == null)
+            try
             {
-                TempData["Error"] = result.Errors.Count > 0
-                    ? string.Join(" | ", result.Errors)
-                    : "Jigsaw merge failed.";
+                var arrangeResult = await _gridArrangementService.ArrangeSheetsGrid(projectId, columnsPerRow);
+                if (!arrangeResult.Success)
+                {
+                    TempData["Error"] = arrangeResult.Message ?? "Grid arrangement failed.";
+                    return RedirectToAction("Workspace", new { projectId });
+                }
+
+                var outputRoot = Path.Combine(_env.WebRootPath, "exports");
+                var filePath = await _exportService.ExportMasterDxfAsync(projectId, outputRoot);
+
+                var fileBytes = await System.IO.File.ReadAllBytesAsync(filePath);
+                var fileName = Path.GetFileName(filePath);
+
+                TempData["Success"] = $"Merged {arrangeResult.TotalSheets} sheet(s) into master DXF.";
+
+                return File(fileBytes, "application/dxf", fileName);
+            }
+            catch (Exception ex)
+            {
+                TempData["Error"] = $"Merge failed: {ex.Message}";
                 return RedirectToAction("Workspace", new { projectId });
             }
-
-            var fileBytes = await System.IO.File.ReadAllBytesAsync(result.OutputFilePath);
-            var fileName = Path.GetFileName(result.OutputFilePath);
-
-            TempData["Success"] =
-                $"Jigsaw merge complete: {result.PlacedCount}/{result.TotalSlots} slots placed, {result.MissingCount} gap(s) preserved.";
-
-            if (result.Errors.Count > 0)
-                TempData["Error"] = string.Join(" | ", result.Errors);
-
-            return File(fileBytes, "application/dxf", fileName);
         }
 
         [HttpGet]
