@@ -1,352 +1,1577 @@
-﻿// wwwroot/js/workspace.js — Jigsaw Board workspace logic
-// Expects window.workspaceConfig to be set by the view before this script loads:
-// { sheets, unplacedCount, urls: { georeference, getOpenSlots, placeSheet } }
+﻿// wwwroot/js/workspace.js
+//
+// CAD workspace:
+//
+// 1. CAD Geometry = actual DWG/DXF polygon geometry.
+// 2. Placement Grid = logical placement helper.
+// 3. LaghuReferenceNumber is NOT used for geometry or alignment.
+// 4. PointLabel is NOT used for geometry or alignment.
+// 5. Server-side CadastralMergeService decides actual XY merging.
+//
+// The CAD view loads the project's existing SvgMosaicExportService
+// through Sheets/SvgPreview.
 
 (function () {
-    const config = window.workspaceConfig;
-    const sheets = config.sheets;
+
+    'use strict';
+
+
+    const config =
+        window.workspaceConfig || {};
+
+    const sheets =
+        config.sheets || [];
+
 
     let selectedSheetId = null;
+
     let draggedSheetId = null;
 
+    let magnetCell = null;
+
+
+    // =========================================================
+    // ANTI FORGERY
+    // =========================================================
+
     function antiForgeryToken() {
-        return document.querySelector('#form-remove input[name="__RequestVerificationToken"]').value;
+
+        const input =
+            document.querySelector(
+                '#form-remove input[name="__RequestVerificationToken"]'
+            );
+
+        return input
+            ? input.value
+            : '';
+
     }
+
+
+    // =========================================================
+    // VIEW SWITCHING
+    // =========================================================
 
     window.switchView = function (mode) {
-        document.getElementById('grid-view').style.display = mode === 'grid' ? 'grid' : 'none';
-        document.getElementById('canvas-view').style.display = mode === 'canvas' ? 'block' : 'none';
-        document.getElementById('btn-grid').classList.toggle('active', mode === 'grid');
-        document.getElementById('btn-canvas').classList.toggle('active', mode === 'canvas');
-    };
 
-    // ── Sheet Selection → Detail Panel + Connect Targets ──
-    window.selectSheet = function (sheetId) {
-        selectedSheetId = sheetId;
-        const s = sheets.find(x => x.SheetID === sheetId);
-        if (!s) return;
+        const cadView =
+            document.getElementById(
+                'cad-view'
+            );
 
-        document.getElementById('detail-body').innerHTML = `
-            <div class="detail-row"><label>Sheet Number</label><span>${s.SheetNumber}</span></div>
-            <div class="detail-row"><label>Laghu Ref</label><span>${s.LaghuRef}</span></div>
-            <div class="detail-row"><label>Status</label><span>${s.Status}</span></div>
-            <div class="detail-row"><label>Grid Position</label>
-                <span>${s.GridRow !== null ? '(' + s.GridRow + ', ' + s.GridCol + ')' : 'Unplaced'}</span>
-            </div>
-        `;
+        const gridView =
+            document.getElementById(
+                'grid-view'
+            );
 
-        document.getElementById('parse-sheet-id').value = sheetId;
-        document.getElementById('btn-georeference').href = config.urls.georeference + '?sheetId=' + sheetId;
-        document.getElementById('detail-actions').style.display = 'flex';
+        const cadButton =
+            document.getElementById(
+                'btn-cad'
+            );
 
-        highlightConnectTargets(sheetId);
-    };
+        const gridButton =
+            document.getElementById(
+                'btn-grid'
+            );
 
-    // Highlights valid empty neighbor cells for the selected sheet as
-    // "Connect Here" — no directional (N/S/E/W) language shown to the user.
-    function clearConnectTargets() {
-        document.querySelectorAll('.grid-cell.connect-target').forEach(cell => {
-            cell.classList.remove('connect-target');
-            const lbl = cell.querySelector('.connect-label');
-            if (lbl) lbl.remove();
-            cell.onclick = null;
-            if (cell.dataset.row !== undefined) {
-                const r = cell.dataset.row, c = cell.dataset.col;
-                cell.onclick = () => promptManualPlace(parseInt(r, 10), parseInt(c, 10));
-            }
-        });
-    }
 
-    function highlightConnectTargets(sheetId) {
-        clearConnectTargets();
+        if (mode === 'grid') {
 
-        fetch(config.urls.getOpenSlots + '?sheetId=' + sheetId)
-            .then(r => r.json())
-            .then(slots => {
-                slots.forEach(slot => {
-                    const cell = document.getElementById(`cell-${slot.gridRow}-${slot.gridCol}`);
-                    if (!cell || !cell.classList.contains('empty')) return;
+            cadView.style.display =
+                'none';
 
-                    cell.classList.add('connect-target');
-                    const label = document.createElement('div');
-                    label.className = 'connect-label';
-                    label.textContent = slot.label || 'Connect Here';
-                    cell.appendChild(label);
+            gridView.style.display =
+                'grid';
 
-                    cell.onclick = () => connectSheetHere(sheetId, slot.gridRow, slot.gridCol);
-                });
-            });
-    }
+            cadButton.classList.remove(
+                'active'
+            );
 
-    function connectSheetHere(sheetId, gridRow, gridCol) {
-        const form = new FormData();
-        form.append('sheetId', sheetId);
-        form.append('gridRow', gridRow);
-        form.append('gridCol', gridCol);
-        form.append('__RequestVerificationToken', antiForgeryToken());
+            gridButton.classList.add(
+                'active'
+            );
 
-        fetch(config.urls.placeSheet, {
-            method: 'POST', body: form,
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        })
-            .then(r => r.json())
-            .then(data => {
-                showMergeToast(data);
-                setTimeout(() => location.reload(), 1400);
-            });
-    }
-
-    // ── Stitch Available Sheets (bulk auto place + auto merge, gaps left as-is) ──
-    window.stitchAll = function () {
-        document.getElementById('form-stitch-all').submit();
-    };
-
-    // ── Remove Sheet ──
-    window.removeSheet = function (sheetId, sheetNumber) {
-        if (!confirm(`Remove Sheet ${sheetNumber}? This deletes its file and all tie points. This cannot be undone.`)) {
             return;
         }
-        document.getElementById('remove-sheet-id').value = sheetId;
-        document.getElementById('form-remove').submit();
+
+
+        gridView.style.display =
+            'none';
+
+        cadView.style.display =
+            'flex';
+
+        gridButton.classList.remove(
+            'active'
+        );
+
+        cadButton.classList.add(
+            'active'
+        );
+
+
+        loadCadGeometry();
+
     };
 
-    window.removeSelectedSheet = function () {
-        if (!selectedSheetId) return;
-        const s = sheets.find(x => x.SheetID === selectedSheetId);
-        removeSheet(selectedSheetId, s ? s.SheetNumber : selectedSheetId);
-    };
 
-    // ── Drag and Drop (magnetic snap) ──
-    const SNAP_RADIUS = 70; // px — how far the pointer can be from a cell center and still magnetize to it
-    let draggedLaghu = null;
-    let magnetCell = null; // currently highlighted {row, col} element
+    // =========================================================
+    // SHEET SELECTION
+    // =========================================================
 
-    window.dragStart = function (event, sheetId) {
-        draggedSheetId = sheetId;
-        const s = sheets.find(x => x.SheetID === sheetId);
-        draggedLaghu = s ? s.LaghuRef : null;
-        event.dataTransfer.effectAllowed = 'move';
-        event.dataTransfer.setData('text/plain', String(sheetId)); // required by Firefox to start a drag
-    };
+    window.selectSheet = function (sheetId) {
 
-    function getAlignedNeighbor(row, col) {
-        if (!draggedLaghu || draggedLaghu === '—') return null;
-        const offsets = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-        for (const [dr, dc] of offsets) {
-            const n = sheets.find(x => x.GridRow === row + dr && x.GridCol === col + dc);
-            if (n && n.LaghuRef === draggedLaghu) return n;
+        selectedSheetId =
+            sheetId;
+
+
+        const sheet =
+            sheets.find(
+                x => x.SheetID === sheetId
+            );
+
+
+        if (!sheet) {
+            return;
         }
-        return null;
-    }
 
-    function clearSnapHighlights() {
-        document.querySelectorAll('.grid-cell.snap-hint, .grid-cell.snap-align')
-            .forEach(c => c.classList.remove('snap-hint', 'snap-align'));
-        document.querySelectorAll('.grid-cell.filled.align-glow')
-            .forEach(c => c.classList.remove('align-glow'));
-    }
 
-    document.getElementById('grid-view').addEventListener('dragover', (event) => {
-        event.preventDefault();
-        if (!draggedSheetId) return;
+        const detailBody =
+            document.getElementById(
+                'detail-body'
+            );
 
-        let nearest = null, nearestDist = Infinity;
-        document.querySelectorAll('.grid-cell.empty').forEach(cell => {
-            const r = cell.getBoundingClientRect();
-            const cx = r.left + r.width / 2;
-            const cy = r.top + r.height / 2;
-            const dist = Math.hypot(event.clientX - cx, event.clientY - cy);
-            if (dist < nearestDist) { nearestDist = dist; nearest = cell; }
-        });
 
-        clearSnapHighlights();
-        magnetCell = null;
+        detailBody.innerHTML = `
 
-        if (nearest && nearestDist <= SNAP_RADIUS) {
-            const row = parseInt(nearest.dataset.row, 10);
-            const col = parseInt(nearest.dataset.col, 10);
-            const alignedNeighbor = getAlignedNeighbor(row, col);
+            <div class="detail-row">
+                <label>Sheet Number</label>
+                <span>
+                    ${escapeHtml(sheet.SheetNumber)}
+                </span>
+            </div>
 
-            nearest.classList.add(alignedNeighbor ? 'snap-align' : 'snap-hint');
-            if (alignedNeighbor) {
-                const neighborCell = document.getElementById(`cell-${alignedNeighbor.GridRow}-${alignedNeighbor.GridCol}`);
-                if (neighborCell) neighborCell.classList.add('align-glow');
+            <div class="detail-row">
+                <label>Status</label>
+                <span>
+                    ${escapeHtml(sheet.Status)}
+                </span>
+            </div>
+
+            <div class="detail-row">
+                <label>Grid Position</label>
+                <span>
+                    ${sheet.GridRow !== null
+                ? '(' +
+                sheet.GridRow +
+                ', ' +
+                sheet.GridCol +
+                ')'
+                : 'Unplaced'
             }
-            magnetCell = { row, col, alignedNeighbor };
+                </span>
+            </div>
+
+            <div class="detail-row">
+                <label>Geometry</label>
+                <span>
+                    Actual DWG/DXF boundary
+                </span>
+            </div>
+
+            <div class="detail-row">
+                <label>Merge Method</label>
+                <span>
+                    Pure XY geometry
+                </span>
+            </div>
+
+        `;
+
+
+        document.getElementById(
+            'parse-sheet-id'
+        ).value = sheetId;
+
+
+        document.getElementById(
+            'btn-georeference'
+        ).href =
+            config.urls.georeference +
+            '?sheetId=' +
+            encodeURIComponent(sheetId);
+
+
+        document.getElementById(
+            'detail-actions'
+        ).style.display =
+            'flex';
+
+
+        highlightCadSheet(
+            sheetId
+        );
+
+    };
+
+
+    // =========================================================
+    // HTML ESCAPE
+    // =========================================================
+
+    function escapeHtml(value) {
+
+        if (value === null ||
+            value === undefined) {
+
+            return '';
+
         }
-    });
 
-    document.getElementById('grid-view').addEventListener('dragleave', (event) => {
-        if (!document.getElementById('grid-view').contains(event.relatedTarget)) {
-            clearSnapHighlights();
-            magnetCell = null;
+
+        return String(value)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#039;');
+
+    }
+
+
+    // =========================================================
+    // CAD GEOMETRY VIEW
+    // =========================================================
+
+    let cadZoom = 1.0;
+
+
+    let cadGeometryLoaded =
+        false;
+
+
+    function loadCadGeometry() {
+
+        const content =
+            document.getElementById(
+                'cad-geometry-content'
+            );
+
+
+        const loading =
+            document.getElementById(
+                'cad-geometry-loading'
+            );
+
+
+        const empty =
+            document.getElementById(
+                'cad-geometry-empty'
+            );
+
+
+        if (!content) {
+            return;
         }
-    });
 
-    document.getElementById('grid-view').addEventListener('drop', (event) => {
-        event.preventDefault();
-        clearSnapHighlights();
 
-        if (!draggedSheetId || !magnetCell) { draggedSheetId = null; return; }
+        if (cadGeometryLoaded) {
 
-        const { row, col } = magnetCell;
-        const form = new FormData();
-        form.append('sheetId', draggedSheetId);
-        form.append('gridRow', row);
-        form.append('gridCol', col);
-        form.append('__RequestVerificationToken', antiForgeryToken());
+            loading.style.display =
+                'none';
 
-        fetch(config.urls.placeSheet, {
-            method: 'POST', body: form,
-            headers: { 'X-Requested-With': 'XMLHttpRequest' }
-        })
-            .then(r => r.json())
-            .then(data => {
-                showMergeToast(data);
-                setTimeout(() => location.reload(), 1400);
+            return;
+
+        }
+
+
+        loading.style.display =
+            'flex';
+
+        empty.style.display =
+            'none';
+
+        content.innerHTML =
+            '';
+
+
+        fetch(
+            config.urls.svgPreview,
+            {
+                method: 'GET',
+                headers: {
+                    'X-Requested-With':
+                        'XMLHttpRequest'
+                }
+            }
+        )
+            .then(response => {
+
+                if (!response.ok) {
+
+                    throw new Error(
+                        'SVG preview failed: ' +
+                        response.status
+                    );
+
+                }
+
+                return response.text();
+
+            })
+            .then(svgText => {
+
+                loading.style.display =
+                    'none';
+
+
+                if (
+                    !svgText ||
+                    !svgText.includes('<svg')
+                ) {
+
+                    empty.style.display =
+                        'flex';
+
+                    return;
+
+                }
+
+
+                content.innerHTML =
+                    svgText;
+
+
+                const svg =
+                    content.querySelector(
+                        'svg'
+                    );
+
+
+                if (!svg) {
+
+                    empty.style.display =
+                        'flex';
+
+                    return;
+
+                }
+
+
+                cadGeometryLoaded =
+                    true;
+
+
+                prepareCadSvg(
+                    svg
+                );
+
+
+                cadFitToGeometry();
+
+            })
+            .catch(error => {
+
+                console.error(
+                    'CAD geometry loading failed:',
+                    error
+                );
+
+
+                loading.style.display =
+                    'none';
+
+
+                empty.style.display =
+                    'flex';
+
+
+                empty.textContent =
+                    'Unable to load CAD geometry.';
+
             });
 
-        draggedSheetId = null;
-        magnetCell = null;
-    });
+    }
 
-    function showMergeToast(data) {
-        let toast = document.getElementById('workspace-toast');
-        if (!toast) {
-            toast = document.createElement('div');
-            toast.id = 'workspace-toast';
-            toast.className = 'toast-feedback';
-            document.body.appendChild(toast);
-        }
 
-        if (!data.success) {
-            toast.textContent = data.placementMessage || 'Placement failed.';
-            toast.className = 'toast-feedback neutral show';
-        } else if (data.merges && data.merges.length > 0) {
-            const merged = data.merges.find(m => m.success);
-            if (merged) {
-                toast.textContent = `Merged with Sheet ${merged.neighborSheetNumber} — RMS ${merged.rmsError.toFixed(3)}`;
-                toast.className = 'toast-feedback success show';
-            } else {
-                const attempt = data.merges[0];
-                toast.textContent = `Placed next to Sheet ${attempt.neighborSheetNumber} — merge skipped: ${attempt.message}`;
-                toast.className = 'toast-feedback neutral show';
+    // =========================================================
+    // PREPARE SVG
+    // =========================================================
+
+    function prepareCadSvg(svg) {
+
+        svg.classList.add(
+            'cad-real-svg'
+        );
+
+
+        svg.setAttribute(
+            'preserveAspectRatio',
+            'xMidYMid meet'
+        );
+
+
+        svg.style.width =
+            '100%';
+
+        svg.style.height =
+            '100%';
+
+
+        const polygons =
+            svg.querySelectorAll(
+                'polygon'
+            );
+
+
+        polygons.forEach(
+            polygon => {
+
+                polygon.classList.add(
+                    'cad-boundary'
+                );
+
+
+                polygon.addEventListener(
+                    'mouseenter',
+                    function () {
+
+                        this.classList.add(
+                            'cad-boundary-hover'
+                        );
+
+                    }
+                );
+
+
+                polygon.addEventListener(
+                    'mouseleave',
+                    function () {
+
+                        this.classList.remove(
+                            'cad-boundary-hover'
+                        );
+
+                    }
+                );
+
             }
-        } else {
-            toast.textContent = 'Placed — no adjacent sheet to merge with';
-            toast.className = 'toast-feedback neutral show';
+        );
+
+
+        /*
+         * The SVG service emits polygons and text.
+         *
+         * We intentionally do not generate any
+         * rectangle around the polygon.
+         */
+
+    }
+
+
+    // =========================================================
+    // CAD SHEET HIGHLIGHT
+    // =========================================================
+
+    function highlightCadSheet(
+        sheetId
+    ) {
+
+        const svg =
+            document.querySelector(
+                '#cad-geometry-content svg'
+            );
+
+
+        if (!svg) {
+            return;
         }
-        setTimeout(() => toast.classList.remove('show'), 1300);
+
+
+        svg.querySelectorAll(
+            '.cad-selected-sheet'
+        )
+            .forEach(
+                element => {
+
+                    element.classList.remove(
+                        'cad-selected-sheet'
+                    );
+
+                }
+            );
+
+
+        /*
+         * The current SvgMosaicExportService does not yet
+         * emit SheetID on each polygon.
+         *
+         * Therefore we do not attempt to guess which
+         * polygon belongs to which sheet.
+         *
+         * The geometry itself remains authoritative.
+         */
+
     }
 
-    window.promptManualPlace = function (row, col) {
-        if (config.unplacedCount === 0) return;
-        document.getElementById('target-cell-label').textContent = `(${row}, ${col})`;
-        document.getElementById('manual-row').value = row;
-        document.getElementById('manual-col').value = col;
-        new bootstrap.Modal(document.getElementById('manualPlaceModal')).show();
-    };
 
-    // ── Canvas View (SVG) drag with magnetic snap ──
-    const CELL_W = 190, CELL_H = 145, ORIGIN_X = 40, ORIGIN_Y = 40, SVG_SNAP_RADIUS = 45;
-    const svg = document.getElementById('canvas-svg');
-    const ghost = document.getElementById('ghost-slot');
-    let svgDragging = null; // { sheetId, group, startX, startY, origRow, origCol }
+    // =========================================================
+    // CAD ZOOM
+    // =========================================================
 
-    function toSvgPoint(clientX, clientY) {
-        const pt = svg.createSVGPoint();
-        pt.x = clientX; pt.y = clientY;
-        return pt.matrixTransform(svg.getScreenCTM().inverse());
+    function applyCadZoom() {
+
+        const svg =
+            document.querySelector(
+                '#cad-geometry-content svg'
+            );
+
+
+        if (!svg) {
+            return;
+        }
+
+
+        svg.style.transform =
+            `scale(${cadZoom})`;
+
+
+        svg.style.transformOrigin =
+            'center center';
+
     }
 
-    function slotOccupied(row, col, excludeSheetId) {
-        return sheets.some(s => s.GridRow === row && s.GridCol === col && s.SheetID !== excludeSheetId);
-    }
 
-    window.svgDragStart = function (event, sheetId) {
-        event.stopPropagation();
-        const s = sheets.find(x => x.SheetID === sheetId);
-        if (!s) return;
-        const p = toSvgPoint(event.clientX, event.clientY);
-        svgDragging = {
-            sheetId, group: document.getElementById(`poly-${sheetId}`),
-            laghu: s.LaghuRef, startX: p.x, startY: p.y,
-            origRow: s.GridRow, origCol: s.GridCol
+    window.cadZoomIn =
+        function () {
+
+            cadZoom =
+                Math.min(
+                    cadZoom + 0.15,
+                    5.0
+                );
+
+
+            applyCadZoom();
+
         };
-        svgDragging.group.style.cursor = 'grabbing';
-    };
 
-    svg.addEventListener('mousemove', (event) => {
-        if (!svgDragging) return;
-        const p = toSvgPoint(event.clientX, event.clientY);
-        const dx = p.x - svgDragging.startX, dy = p.y - svgDragging.startY;
-        svgDragging.group.setAttribute('transform', `translate(${dx},${dy})`);
 
-        const curX = ORIGIN_X + svgDragging.origCol * CELL_W + dx;
-        const curY = ORIGIN_Y + svgDragging.origRow * CELL_H + dy;
-        const targetCol = Math.round((curX - ORIGIN_X) / CELL_W);
-        const targetRow = Math.round((curY - ORIGIN_Y) / CELL_H);
-        const slotX = ORIGIN_X + targetCol * CELL_W;
-        const slotY = ORIGIN_Y + targetRow * CELL_H;
-        const dist = Math.hypot(curX - slotX, curY - slotY);
+    window.cadZoomOut =
+        function () {
 
-        document.querySelectorAll('.sheet-polygon.align-glow rect').forEach(r => r.classList.remove('align-glow'));
+            cadZoom =
+                Math.max(
+                    cadZoom - 0.15,
+                    0.25
+                );
 
-        if (dist <= SVG_SNAP_RADIUS && !slotOccupied(targetRow, targetCol, svgDragging.sheetId)) {
-            const neighbor = getAlignedNeighborFor(svgDragging.laghu, targetRow, targetCol);
-            ghost.setAttribute('x', slotX);
-            ghost.setAttribute('y', slotY);
-            ghost.setAttribute('stroke', neighbor ? '#22c55e' : '#38bdf8');
-            ghost.setAttribute('fill', neighbor ? '#22c55e' : '#38bdf8');
-            ghost.style.display = 'block';
-            svgDragging.snapTarget = { row: targetRow, col: targetCol, neighbor };
 
-            if (neighbor) {
-                const nEl = document.getElementById(`poly-${neighbor.SheetID}`);
-                if (nEl) nEl.querySelector('rect').classList.add('align-glow');
+            applyCadZoom();
+
+        };
+
+
+    window.cadZoomReset =
+        function () {
+
+            cadZoom =
+                1.0;
+
+
+            applyCadZoom();
+
+        };
+
+
+    window.cadFitToGeometry =
+        function () {
+
+            cadZoom =
+                1.0;
+
+
+            const svg =
+                document.querySelector(
+                    '#cad-geometry-content svg'
+                );
+
+
+            if (!svg) {
+                return;
             }
-        } else {
-            ghost.style.display = 'none';
-            svgDragging.snapTarget = null;
-        }
-    });
 
-    svg.addEventListener('mouseup', () => {
-        if (!svgDragging) return;
-        ghost.style.display = 'none';
-        document.querySelectorAll('.sheet-polygon rect.align-glow').forEach(r => r.classList.remove('align-glow'));
-        svgDragging.group.style.cursor = 'grab';
 
-        if (svgDragging.snapTarget) {
-            const { row, col } = svgDragging.snapTarget;
-            const form = new FormData();
-            form.append('sheetId', svgDragging.sheetId);
-            form.append('gridRow', row);
-            form.append('gridCol', col);
-            form.append('__RequestVerificationToken', antiForgeryToken());
+            svg.style.transform =
+                'scale(1)';
 
-            fetch(config.urls.placeSheet, {
-                method: 'POST', body: form,
-                headers: { 'X-Requested-With': 'XMLHttpRequest' }
-            })
-                .then(r => r.json())
-                .then(data => {
-                    showMergeToast(data);
-                    setTimeout(() => location.reload(), 1400);
-                });
-        } else {
-            svgDragging.group.removeAttribute('transform'); // snap back, no valid slot
-        }
-        svgDragging = null;
-    });
+        };
 
-    function getAlignedNeighborFor(laghu, row, col) {
-        if (!laghu || laghu === '—') return null;
-        const offsets = [[-1, 0], [1, 0], [0, -1], [0, 1]];
-        for (const [dr, dc] of offsets) {
-            const n = sheets.find(x => x.GridRow === row + dr && x.GridCol === col + dc);
-            if (n && n.LaghuRef === laghu) return n;
-        }
-        return null;
+
+    // =========================================================
+    // STITCH ALL
+    // =========================================================
+
+    window.stitchAll =
+        function () {
+
+            const form =
+                document.getElementById(
+                    'form-stitch-all'
+                );
+
+
+            if (form) {
+                form.submit();
+            }
+
+        };
+
+
+    // =========================================================
+    // REMOVE SHEET
+    // =========================================================
+
+    window.removeSheet =
+        function (
+            sheetId,
+            sheetNumber
+        ) {
+
+            if (
+                !confirm(
+                    `Remove Sheet ${sheetNumber}? ` +
+                    `This deletes its file and all tie points. ` +
+                    `This cannot be undone.`
+                )
+            ) {
+
+                return;
+
+            }
+
+
+            document.getElementById(
+                'remove-sheet-id'
+            ).value =
+                sheetId;
+
+
+            document.getElementById(
+                'form-remove'
+            ).submit();
+
+        };
+
+
+    window.removeSelectedSheet =
+        function () {
+
+            if (!selectedSheetId) {
+                return;
+            }
+
+
+            const sheet =
+                sheets.find(
+                    x =>
+                        x.SheetID ===
+                        selectedSheetId
+                );
+
+
+            removeSheet(
+                selectedSheetId,
+                sheet
+                    ? sheet.SheetNumber
+                    : selectedSheetId
+            );
+
+        };
+
+
+    // =========================================================
+    // OPEN TARGET SLOTS
+    //
+    // These are placement slots only.
+    //
+    // NO LaghuReferenceNumber.
+    // NO PointLabel.
+    // NO geometry decision.
+    //
+    // The server performs actual XY merge.
+    // =========================================================
+
+    function clearConnectTargets() {
+
+        document
+            .querySelectorAll(
+                '.grid-cell.connect-target'
+            )
+            .forEach(
+                cell => {
+
+                    cell.classList.remove(
+                        'connect-target'
+                    );
+
+
+                    const label =
+                        cell.querySelector(
+                            '.connect-label'
+                        );
+
+
+                    if (label) {
+                        label.remove();
+                    }
+
+
+                    const row =
+                        cell.dataset.row;
+
+                    const col =
+                        cell.dataset.col;
+
+
+                    if (
+                        row !== undefined &&
+                        col !== undefined
+                    ) {
+
+                        cell.onclick =
+                            () =>
+                                promptManualPlace(
+                                    parseInt(
+                                        row,
+                                        10
+                                    ),
+                                    parseInt(
+                                        col,
+                                        10
+                                    )
+                                );
+
+                    }
+
+                }
+            );
+
     }
+
+
+    function highlightConnectTargets(
+        sheetId
+    ) {
+
+        clearConnectTargets();
+
+
+        if (!config.urls.getOpenSlots) {
+            return;
+        }
+
+
+        fetch(
+            config.urls.getOpenSlots +
+            '?sheetId=' +
+            encodeURIComponent(sheetId)
+        )
+            .then(
+                response => {
+
+                    if (!response.ok) {
+                        throw new Error(
+                            'Unable to get open slots.'
+                        );
+                    }
+
+                    return response.json();
+
+                }
+            )
+            .then(
+                slots => {
+
+                    if (!Array.isArray(slots)) {
+                        return;
+                    }
+
+
+                    slots.forEach(
+                        slot => {
+
+                            const cell =
+                                document.getElementById(
+                                    `cell-${slot.gridRow}-${slot.gridCol}`
+                                );
+
+
+                            if (
+                                !cell ||
+                                !cell.classList.contains(
+                                    'empty'
+                                )
+                            ) {
+
+                                return;
+
+                            }
+
+
+                            cell.classList.add(
+                                'connect-target'
+                            );
+
+
+                            const label =
+                                document.createElement(
+                                    'div'
+                                );
+
+
+                            label.className =
+                                'connect-label';
+
+
+                            label.textContent =
+                                slot.label ||
+                                'Connect Here';
+
+
+                            cell.appendChild(
+                                label
+                            );
+
+
+                            cell.onclick =
+                                () =>
+                                    connectSheetHere(
+                                        sheetId,
+                                        slot.gridRow,
+                                        slot.gridCol
+                                    );
+
+                        }
+                    );
+
+                }
+            )
+            .catch(
+                error => {
+
+                    console.error(
+                        error
+                    );
+
+                }
+            );
+
+    }
+
+
+    // =========================================================
+    // PLACE SHEET
+    // =========================================================
+
+    function connectSheetHere(
+        sheetId,
+        gridRow,
+        gridCol
+    ) {
+
+        const form =
+            new FormData();
+
+
+        form.append(
+            'sheetId',
+            String(sheetId)
+        );
+
+
+        form.append(
+            'gridRow',
+            String(gridRow)
+        );
+
+
+        form.append(
+            'gridCol',
+            String(gridCol)
+        );
+
+
+        const token =
+            antiForgeryToken();
+
+
+        if (token) {
+
+            form.append(
+                '__RequestVerificationToken',
+                token
+            );
+
+        }
+
+
+        fetch(
+            config.urls.placeSheet,
+            {
+                method: 'POST',
+                body: form,
+                headers: {
+                    'X-Requested-With':
+                        'XMLHttpRequest'
+                }
+            }
+        )
+            .then(
+                response => {
+
+                    if (!response.ok) {
+                        throw new Error(
+                            'Placement failed.'
+                        );
+                    }
+
+                    return response.json();
+
+                }
+            )
+            .then(
+                data => {
+
+                    showMergeToast(
+                        data
+                    );
+
+
+                    setTimeout(
+                        () =>
+                            location.reload(),
+                        1400
+                    );
+
+                }
+            )
+            .catch(
+                error => {
+
+                    console.error(
+                        error
+                    );
+
+
+                    showPlacementError(
+                        'Sheet placement failed.'
+                    );
+
+                }
+            );
+
+    }
+
+
+    // =========================================================
+    // GRID DRAG
+    // =========================================================
+
+    const SNAP_RADIUS =
+        70;
+
+
+    window.dragStart =
+        function (
+            event,
+            sheetId
+        ) {
+
+            draggedSheetId =
+                sheetId;
+
+
+            event.dataTransfer.effectAllowed =
+                'move';
+
+
+            event.dataTransfer.setData(
+                'text/plain',
+                String(sheetId)
+            );
+
+        };
+
+
+    function clearSnapHighlights() {
+
+        document
+            .querySelectorAll(
+                '.grid-cell.snap-hint'
+            )
+            .forEach(
+                cell =>
+                    cell.classList.remove(
+                        'snap-hint'
+                    )
+            );
+
+
+        document
+            .querySelectorAll(
+                '.grid-cell.filled.align-glow'
+            )
+            .forEach(
+                cell =>
+                    cell.classList.remove(
+                        'align-glow'
+                    )
+            );
+
+    }
+
+
+    const gridView =
+        document.getElementById(
+            'grid-view'
+        );
+
+
+    if (gridView) {
+
+        gridView.addEventListener(
+            'dragover',
+            function (event) {
+
+                event.preventDefault();
+
+
+                if (!draggedSheetId) {
+                    return;
+                }
+
+
+                let nearest = null;
+
+                let nearestDistance =
+                    Infinity;
+
+
+                document
+                    .querySelectorAll(
+                        '.grid-cell.empty'
+                    )
+                    .forEach(
+                        cell => {
+
+                            const rect =
+                                cell.getBoundingClientRect();
+
+
+                            const centerX =
+                                rect.left +
+                                rect.width / 2;
+
+
+                            const centerY =
+                                rect.top +
+                                rect.height / 2;
+
+
+                            const distance =
+                                Math.hypot(
+                                    event.clientX -
+                                    centerX,
+                                    event.clientY -
+                                    centerY
+                                );
+
+
+                            if (
+                                distance <
+                                nearestDistance
+                            ) {
+
+                                nearestDistance =
+                                    distance;
+
+                                nearest =
+                                    cell;
+
+                            }
+
+                        }
+                    );
+
+
+                clearSnapHighlights();
+
+                magnetCell = null;
+
+
+                if (
+                    nearest &&
+                    nearestDistance <=
+                    SNAP_RADIUS
+                ) {
+
+                    const row =
+                        parseInt(
+                            nearest.dataset.row,
+                            10
+                        );
+
+
+                    const col =
+                        parseInt(
+                            nearest.dataset.col,
+                            10
+                        );
+
+
+                    /*
+                     * IMPORTANT:
+                     *
+                     * There is deliberately no:
+                     *
+                     *     LaghuRef == LaghuRef
+                     *
+                     * check here.
+                     *
+                     * This is only a placement position.
+                     */
+
+                    nearest.classList.add(
+                        'snap-hint'
+                    );
+
+
+                    magnetCell = {
+                        row,
+                        col
+                    };
+
+                }
+
+            }
+        );
+
+
+        gridView.addEventListener(
+            'dragleave',
+            function (event) {
+
+                if (
+                    !gridView.contains(
+                        event.relatedTarget
+                    )
+                ) {
+
+                    clearSnapHighlights();
+
+                    magnetCell = null;
+
+                }
+
+            }
+        );
+
+
+        gridView.addEventListener(
+            'drop',
+            function (event) {
+
+                event.preventDefault();
+
+
+                clearSnapHighlights();
+
+
+                if (
+                    !draggedSheetId ||
+                    !magnetCell
+                ) {
+
+                    draggedSheetId =
+                        null;
+
+                    magnetCell =
+                        null;
+
+                    return;
+
+                }
+
+
+                const row =
+                    magnetCell.row;
+
+                const col =
+                    magnetCell.col;
+
+
+                const form =
+                    new FormData();
+
+
+                form.append(
+                    'sheetId',
+                    String(
+                        draggedSheetId
+                    )
+                );
+
+
+                form.append(
+                    'gridRow',
+                    String(row)
+                );
+
+
+                form.append(
+                    'gridCol',
+                    String(col)
+                );
+
+
+                const token =
+                    antiForgeryToken();
+
+
+                if (token) {
+
+                    form.append(
+                        '__RequestVerificationToken',
+                        token
+                    );
+
+                }
+
+
+                fetch(
+                    config.urls.placeSheet,
+                    {
+                        method: 'POST',
+                        body: form,
+                        headers: {
+                            'X-Requested-With':
+                                'XMLHttpRequest'
+                        }
+                    }
+                )
+                    .then(
+                        response => {
+
+                            if (!response.ok) {
+                                throw new Error(
+                                    'Placement failed.'
+                                );
+                            }
+
+                            return response.json();
+
+                        }
+                    )
+                    .then(
+                        data => {
+
+                            showMergeToast(
+                                data
+                            );
+
+
+                            setTimeout(
+                                () =>
+                                    location.reload(),
+                                1400
+                            );
+
+                        }
+                    )
+                    .catch(
+                        error => {
+
+                            console.error(
+                                error
+                            );
+
+
+                            showPlacementError(
+                                'Sheet placement failed.'
+                            );
+
+                        }
+                    );
+
+
+                draggedSheetId =
+                    null;
+
+                magnetCell =
+                    null;
+
+            }
+        );
+
+    }
+
+
+    // =========================================================
+    // MERGE / PLACEMENT TOAST
+    // =========================================================
+
+    function showMergeToast(
+        data
+    ) {
+
+        let toast =
+            document.getElementById(
+                'workspace-toast'
+            );
+
+
+        if (!toast) {
+
+            toast =
+                document.createElement(
+                    'div'
+                );
+
+
+            toast.id =
+                'workspace-toast';
+
+
+            toast.className =
+                'toast-feedback';
+
+
+            document.body.appendChild(
+                toast
+            );
+
+        }
+
+
+        if (
+            !data ||
+            !data.success
+        ) {
+
+            toast.textContent =
+                data &&
+                    data.placementMessage
+                    ? data.placementMessage
+                    : 'Placement failed.';
+
+
+            toast.className =
+                'toast-feedback neutral show';
+
+        }
+
+        else if (
+            data.merges &&
+            data.merges.length > 0
+        ) {
+
+            const merged =
+                data.merges.find(
+                    merge =>
+                        merge.success
+                );
+
+
+            if (merged) {
+
+                const rms =
+                    Number(
+                        merged.rmsError || 0
+                    );
+
+
+                toast.textContent =
+                    `Merged with Sheet ` +
+                    `${merged.neighborSheetNumber} ` +
+                    `— RMS ${rms.toFixed(3)}`;
+
+
+                toast.className =
+                    'toast-feedback success show';
+
+            }
+
+            else {
+
+                const attempt =
+                    data.merges[0];
+
+
+                toast.textContent =
+                    `Placed next to Sheet ` +
+                    `${attempt.neighborSheetNumber} ` +
+                    `— merge skipped: ` +
+                    `${attempt.message}`;
+
+
+                toast.className =
+                    'toast-feedback neutral show';
+
+            }
+
+        }
+
+        else {
+
+            toast.textContent =
+                'Placed — no adjacent sheet to merge with';
+
+
+            toast.className =
+                'toast-feedback neutral show';
+
+        }
+
+
+        setTimeout(
+            () =>
+                toast.classList.remove(
+                    'show'
+                ),
+            1600
+        );
+
+    }
+
+
+    function showPlacementError(
+        message
+    ) {
+
+        let toast =
+            document.getElementById(
+                'workspace-toast'
+            );
+
+
+        if (!toast) {
+
+            toast =
+                document.createElement(
+                    'div'
+                );
+
+
+            toast.id =
+                'workspace-toast';
+
+
+            toast.className =
+                'toast-feedback';
+
+
+            document.body.appendChild(
+                toast
+            );
+
+        }
+
+
+        toast.textContent =
+            message;
+
+
+        toast.className =
+            'toast-feedback neutral show';
+
+
+        setTimeout(
+            () =>
+                toast.classList.remove(
+                    'show'
+                ),
+            1800
+        );
+
+    }
+
+
+    // =========================================================
+    // MANUAL PLACEMENT
+    // =========================================================
+
+    window.promptManualPlace =
+        function (
+            row,
+            col
+        ) {
+
+            if (
+                config.unplacedCount === 0
+            ) {
+
+                return;
+
+            }
+
+
+            document.getElementById(
+                'target-cell-label'
+            ).textContent =
+                `(${row}, ${col})`;
+
+
+            document.getElementById(
+                'manual-row'
+            ).value =
+                row;
+
+
+            document.getElementById(
+                'manual-col'
+            ).value =
+                col;
+
+
+            const modalElement =
+                document.getElementById(
+                    'manualPlaceModal'
+                );
+
+
+            bootstrap.Modal
+                .getOrCreateInstance(
+                    modalElement
+                )
+                .show();
+
+        };
+
+
+    // =========================================================
+    // INITIALIZATION
+    // =========================================================
+
+    document.addEventListener(
+        'DOMContentLoaded',
+        function () {
+
+            /*
+             * CAD geometry is the default view.
+             */
+
+            switchView(
+                'cad'
+            );
+
+
+            /*
+             * Load placement targets only when
+             * a sheet is selected.
+             */
+
+        }
+    );
+
 })();

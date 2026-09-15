@@ -1,25 +1,4 @@
-﻿// Services/CadastralMergeService.cs
-//
-// Pure XY-based cadastral sheet merging.
-//
-// Strategy:
-//   1. Ignore LaghuReferenceNumber.
-//   2. Ignore PointLabel.
-//   3. Determine each sheet's coordinate extent from its TiePoints.
-//   4. Identify points close to each sheet edge.
-//   5. Compare opposing edges:
-//        Base.Right  <-> Adjacent.Left
-//        Base.Left   <-> Adjacent.Right
-//        Base.Top    <-> Adjacent.Bottom
-//        Base.Bottom <-> Adjacent.Top
-//   6. Require sufficient overlap/alignment along the shared edge.
-//   7. Calculate a translation that places the adjacent sheet beside
-//      the base sheet in the same coordinate system.
-//
-// This is intentionally geometry-first because cadastral DWGs may not
-// expose Marathi/Sakal text labels reliably.
-
-using MapStitcher.Business.Contracts;
+﻿using MapStitcher.Business.Contracts;
 using MapStitcher.Database;
 using MapStitcher.Repositories.Contracts;
 
@@ -27,19 +6,9 @@ namespace MapStitcher.Business.Services
 {
     public class CadastralMergeService : ICadastralMergeService
     {
-        // Distance from the calculated sheet boundary within which a
-        // TiePoint is considered an edge point.
         private const double EdgeTolerance = 25.0;
-
-        // Maximum allowed difference between normalized coordinates on
-        // the shared edge.
         private const double AlignmentTolerance = 25.0;
-
-        // Minimum number of edge points required to consider a geometric
-        // relationship reliable.
         private const int MinimumEdgePoints = 2;
-
-        // Minimum fraction of points that should overlap/alignment-match.
         private const double MinimumOverlapRatio = 0.50;
 
         private readonly ITiePointRepository _tiePointRepo;
@@ -57,11 +26,13 @@ namespace MapStitcher.Business.Services
             int baseSheetId,
             int adjacentSheetId)
         {
-            var baseSheet = await _sheetRepo.GetByIdAsync(baseSheetId)
+            var baseSheet =
+                await _sheetRepo.GetByIdAsync(baseSheetId)
                 ?? throw new InvalidOperationException(
                     $"Base sheet {baseSheetId} not found.");
 
-            var adjacentSheet = await _sheetRepo.GetByIdAsync(adjacentSheetId)
+            var adjacentSheet =
+                await _sheetRepo.GetByIdAsync(adjacentSheetId)
                 ?? throw new InvalidOperationException(
                     $"Adjacent sheet {adjacentSheetId} not found.");
 
@@ -72,54 +43,103 @@ namespace MapStitcher.Business.Services
                     "Base and adjacent sheets must be different.");
             }
 
-            var basePoints = await _tiePointRepo.GetBySheetIdAsync(baseSheetId);
-            var adjacentPoints =
-                await _tiePointRepo.GetBySheetIdAsync(adjacentSheetId);
+            var basePoints =
+                await _tiePointRepo.GetBySheetIdAsync(
+                    baseSheetId);
 
-            if (basePoints.Count == 0 || adjacentPoints.Count == 0)
+            var adjacentPoints =
+                await _tiePointRepo.GetBySheetIdAsync(
+                    adjacentSheetId);
+
+            if (basePoints.Count == 0 ||
+                adjacentPoints.Count == 0)
             {
                 return Failure(
-                    "One or both sheets contain no coordinate tie points.",
-                    "Not enough coordinate data to identify the sheet relationship.");
+                    "One or both sheets contain no geometry coordinates.",
+                    "Not enough geometry data to merge the sheets.");
             }
 
-            var baseExtent = CalculateExtent(basePoints);
-            var adjacentExtent = CalculateExtent(adjacentPoints);
+            var baseExtent =
+                CalculateExtent(basePoints);
 
-            var relationship = FindBestEdgeRelationship(
-                basePoints,
-                adjacentPoints,
-                baseExtent,
-                adjacentExtent);
+            var adjacentExtent =
+                CalculateExtent(adjacentPoints);
+
+            /*
+             * All points are already normalized to each sheet's local
+             * origin by CadastralParsingService.
+             *
+             * Therefore every sheet starts at:
+             *
+             *     MinX = 0
+             *     MinY = 0
+             *
+             * Width and height describe the actual local sheet size.
+             */
+            var relationship =
+                FindBestEdgeRelationship(
+                    basePoints,
+                    adjacentPoints,
+                    baseExtent,
+                    adjacentExtent);
 
             if (relationship == null)
             {
                 return Failure(
                     $"No XY edge relationship found between " +
-                    $"'{baseSheet.SheetNumber}' and '{adjacentSheet.SheetNumber}'.",
-                    "Sheets do not have enough matching edge coordinates to merge.");
+                    $"'{baseSheet.SheetNumber}' and " +
+                    $"'{adjacentSheet.SheetNumber}'.",
+                    "Sheets do not have enough matching geometry along a shared edge.");
             }
 
-            var translateX = relationship.TranslateX;
-            var translateY = relationship.TranslateY;
+            /*
+             * relationship.TranslateX/Y is local movement from the base
+             * sheet's coordinate system.
+             *
+             * The final transform must include the base sheet's existing
+             * global transform.
+             *
+             * A -> B -> C:
+             *
+             * A = 0
+             * B = A + localB
+             * C = B + localC
+             *
+             * This prevents chain merges from losing previous transforms.
+             */
+            var globalTranslateX =
+                baseSheet.TransformTranslateX +
+                relationship.TranslateX;
 
-            // Apply the calculated transform to every point on the
-            // adjacent sheet.
+            var globalTranslateY =
+                baseSheet.TransformTranslateY +
+                relationship.TranslateY;
+
             foreach (var point in adjacentPoints)
             {
-                point.TargetX = point.SourceX + translateX;
-                point.TargetY = point.SourceY + translateY;
+                point.TargetX =
+                    point.SourceX +
+                    globalTranslateX;
+
+                point.TargetY =
+                    point.SourceY +
+                    globalTranslateY;
             }
 
-            // This merge is translation-only. No rotation or scale is
-            // introduced by the XY cadastral sheet strategy.
             adjacentSheet.TransformRotation = 0.0;
             adjacentSheet.TransformScale = 1.0;
-            adjacentSheet.TransformTranslateX = translateX;
-            adjacentSheet.TransformTranslateY = translateY;
 
-            adjacentSheet.Status = SheetStatus.Merged;
-            baseSheet.Status = SheetStatus.Merged;
+            adjacentSheet.TransformTranslateX =
+                globalTranslateX;
+
+            adjacentSheet.TransformTranslateY =
+                globalTranslateY;
+
+            adjacentSheet.Status =
+                SheetStatus.Merged;
+
+            baseSheet.Status =
+                SheetStatus.Merged;
 
             await _tiePointRepo.SaveChangesAsync();
             await _sheetRepo.SaveChangesAsync();
@@ -128,31 +148,32 @@ namespace MapStitcher.Business.Services
             {
                 Success = true,
 
-                // These are actual geometric edge matches, not text-label
-                // matches.
-                MatchedPointCount = relationship.MatchedPointCount,
-                InlierPointCount = relationship.MatchedPointCount,
+                MatchedPointCount =
+                    relationship.MatchedPointCount,
+
+                InlierPointCount =
+                    relationship.MatchedPointCount,
+
                 RejectedOutlierCount =
                     Math.Max(
                         0,
                         relationship.BaseEdgePointCount -
                         relationship.MatchedPointCount),
 
-                RmsErrorMeters = relationship.RmsError,
+                RmsErrorMeters =
+                    relationship.RmsError,
 
                 Message =
-                    $"Merged using pure XY edge matching " +
+                    $"Merged using normalized XY geometry " +
                     $"({relationship.Direction}). " +
-                    $"Translation: X={translateX:F3}, Y={translateY:F3}. " +
+                    $"Global translation: " +
+                    $"X={globalTranslateX:F3}, " +
+                    $"Y={globalTranslateY:F3}. " +
                     $"Matched {relationship.MatchedPointCount} edge points.",
 
                 FailureReason = null
             };
         }
-
-        // -----------------------------------------------------------------
-        // EDGE RELATIONSHIP DETECTION
-        // -----------------------------------------------------------------
 
         private static EdgeRelationship? FindBestEdgeRelationship(
             List<TiePoint> basePoints,
@@ -160,61 +181,47 @@ namespace MapStitcher.Business.Services
             SheetExtent baseExtent,
             SheetExtent adjacentExtent)
         {
-            var candidates = new List<EdgeRelationship>();
+            var candidates =
+                new List<EdgeRelationship?>();
 
-            // Base right -> adjacent left.
-            //
-            // Example:
-            //
-            // Base:     X = 0 ... 1000
-            // Adjacent: X = 0 ... 1000
-            //
-            // Result:
-            // Adjacent X=0 moves to Base MaxX.
             candidates.Add(
                 EvaluateHorizontalRelationship(
                     basePoints,
                     adjacentPoints,
                     baseExtent,
                     adjacentExtent,
-                    baseRight: true));
+                    true));
 
-            // Base left -> adjacent right.
             candidates.Add(
                 EvaluateHorizontalRelationship(
                     basePoints,
                     adjacentPoints,
                     baseExtent,
                     adjacentExtent,
-                    baseRight: false));
+                    false));
 
-            // Base top -> adjacent bottom.
             candidates.Add(
                 EvaluateVerticalRelationship(
                     basePoints,
                     adjacentPoints,
                     baseExtent,
                     adjacentExtent,
-                    baseTop: true));
+                    true));
 
-            // Base bottom -> adjacent top.
             candidates.Add(
                 EvaluateVerticalRelationship(
                     basePoints,
                     adjacentPoints,
                     baseExtent,
                     adjacentExtent,
-                    baseTop: false));
+                    false));
 
             return candidates
                 .Where(c => c != null)
                 .OrderByDescending(c => c!.Score)
+                .ThenBy(c => c!.RmsError)
                 .FirstOrDefault();
         }
-
-        // -----------------------------------------------------------------
-        // HORIZONTAL RELATIONSHIPS
-        // -----------------------------------------------------------------
 
         private static EdgeRelationship? EvaluateHorizontalRelationship(
             List<TiePoint> basePoints,
@@ -223,13 +230,23 @@ namespace MapStitcher.Business.Services
             SheetExtent adjacentExtent,
             bool baseRight)
         {
-            var baseEdge = baseRight
-                ? GetRightEdgePoints(basePoints, baseExtent)
-                : GetLeftEdgePoints(basePoints, baseExtent);
+            var baseEdge =
+                baseRight
+                    ? GetRightEdgePoints(
+                        basePoints,
+                        baseExtent)
+                    : GetLeftEdgePoints(
+                        basePoints,
+                        baseExtent);
 
-            var adjacentEdge = baseRight
-                ? GetLeftEdgePoints(adjacentPoints, adjacentExtent)
-                : GetRightEdgePoints(adjacentPoints, adjacentExtent);
+            var adjacentEdge =
+                baseRight
+                    ? GetLeftEdgePoints(
+                        adjacentPoints,
+                        adjacentExtent)
+                    : GetRightEdgePoints(
+                        adjacentPoints,
+                        adjacentExtent);
 
             if (baseEdge.Count < MinimumEdgePoints ||
                 adjacentEdge.Count < MinimumEdgePoints)
@@ -237,83 +254,103 @@ namespace MapStitcher.Business.Services
                 return null;
             }
 
-            var matches = MatchByCoordinate(
-                baseEdge,
-                adjacentEdge,
-                useX: false);
+            var matches =
+                MatchByCoordinate(
+                    baseEdge,
+                    adjacentEdge,
+                    false);
 
             if (matches.Count < MinimumEdgePoints)
                 return null;
 
-            var baseRange = GetRange(baseEdge.Select(p => p.SourceY));
-            var adjacentRange = GetRange(
-                adjacentEdge.Select(p => p.SourceY));
+            var baseRange =
+                GetRange(
+                    baseEdge.Select(
+                        p => p.SourceY));
 
-            var overlap = CalculateRangeOverlap(
-                baseRange.Min,
-                baseRange.Max,
-                adjacentRange.Min,
-                adjacentRange.Max);
+            var adjacentRange =
+                GetRange(
+                    adjacentEdge.Select(
+                        p => p.SourceY));
 
-            var smallerRange = Math.Min(
-                baseRange.Max - baseRange.Min,
-                adjacentRange.Max - adjacentRange.Min);
+            var overlap =
+                CalculateRangeOverlap(
+                    baseRange.Min,
+                    baseRange.Max,
+                    adjacentRange.Min,
+                    adjacentRange.Max);
 
-            // If the edge has effectively no length, fall back to
-            // point-count matching.
-            var overlapRatio = smallerRange <= 0
-                ? 1.0
-                : overlap / smallerRange;
+            var smallerRange =
+                Math.Min(
+                    baseRange.Max - baseRange.Min,
+                    adjacentRange.Max - adjacentRange.Min);
 
-            if (overlapRatio < MinimumOverlapRatio)
+            var overlapRatio =
+                smallerRange <= 0
+                    ? 1.0
+                    : overlap / smallerRange;
+
+            if (overlapRatio <
+                MinimumOverlapRatio)
+            {
                 return null;
+            }
 
-            // Translation is determined from the opposing sheet edges.
-            //
-            // Base.Right + Adjacent.Left:
-            //     targetX = adjacentX + (Base.MaxX - Adjacent.MinX)
-            //
-            // Base.Left + Adjacent.Right:
-            //     targetX = adjacentX + (Base.MinX - Adjacent.MaxX)
-            //
-            var translateX = baseRight
-                ? baseExtent.MaxX - adjacentExtent.MinX
-                : baseExtent.MinX - adjacentExtent.MaxX;
+            /*
+             * Because both sheets are normalized to local (0,0):
+             *
+             * Base.Right -> Adjacent.Left
+             *
+             * adjacent local X = 0
+             * base local X = base width
+             *
+             * Therefore:
+             *
+             * adjacent global X =
+             *     base global X + base width
+             */
+            var translateX =
+                baseRight
+                    ? baseExtent.MaxX -
+                      adjacentExtent.MinX
+                    : baseExtent.MinX -
+                      adjacentExtent.MaxX;
 
-            // Y is determined from the matched edge points rather than
-            // relying on labels.
-            var translateY = matches.Average(
-                pair => pair.Base.SourceY - pair.Adjacent.SourceY);
+            var translateY =
+                CalculateBestAxisTranslation(
+                    matches,
+                    useX: false);
 
-            var rms = CalculateRms(
-                matches,
-                translateX,
-                translateY);
+            var rms =
+                CalculateRms(
+                    matches,
+                    translateX,
+                    translateY);
 
             return new EdgeRelationship
             {
-                Direction = baseRight
-                    ? "Base.Right -> Adjacent.Left"
-                    : "Base.Left -> Adjacent.Right",
+                Direction =
+                    baseRight
+                        ? "Base.Right -> Adjacent.Left"
+                        : "Base.Left -> Adjacent.Right",
 
                 TranslateX = translateX,
                 TranslateY = translateY,
 
-                MatchedPointCount = matches.Count,
-                BaseEdgePointCount = baseEdge.Count,
+                MatchedPointCount =
+                    matches.Count,
+
+                BaseEdgePointCount =
+                    baseEdge.Count,
 
                 RmsError = rms,
 
                 Score =
-                    (matches.Count * 100.0) +
-                    (overlapRatio * 100.0) -
+                    matches.Count * 100.0 +
+                    overlapRatio * 100.0 -
                     rms
             };
         }
-
-        // -----------------------------------------------------------------
-        // VERTICAL RELATIONSHIPS
-        // -----------------------------------------------------------------
 
         private static EdgeRelationship? EvaluateVerticalRelationship(
             List<TiePoint> basePoints,
@@ -322,13 +359,23 @@ namespace MapStitcher.Business.Services
             SheetExtent adjacentExtent,
             bool baseTop)
         {
-            var baseEdge = baseTop
-                ? GetTopEdgePoints(basePoints, baseExtent)
-                : GetBottomEdgePoints(basePoints, baseExtent);
+            var baseEdge =
+                baseTop
+                    ? GetTopEdgePoints(
+                        basePoints,
+                        baseExtent)
+                    : GetBottomEdgePoints(
+                        basePoints,
+                        baseExtent);
 
-            var adjacentEdge = baseTop
-                ? GetBottomEdgePoints(adjacentPoints, adjacentExtent)
-                : GetTopEdgePoints(adjacentPoints, adjacentExtent);
+            var adjacentEdge =
+                baseTop
+                    ? GetBottomEdgePoints(
+                        adjacentPoints,
+                        adjacentExtent)
+                    : GetTopEdgePoints(
+                        adjacentPoints,
+                        adjacentExtent);
 
             if (baseEdge.Count < MinimumEdgePoints ||
                 adjacentEdge.Count < MinimumEdgePoints)
@@ -336,79 +383,131 @@ namespace MapStitcher.Business.Services
                 return null;
             }
 
-            var matches = MatchByCoordinate(
-                baseEdge,
-                adjacentEdge,
-                useX: true);
+            var matches =
+                MatchByCoordinate(
+                    baseEdge,
+                    adjacentEdge,
+                    true);
 
             if (matches.Count < MinimumEdgePoints)
                 return null;
 
-            var baseRange = GetRange(baseEdge.Select(p => p.SourceX));
-            var adjacentRange = GetRange(
-                adjacentEdge.Select(p => p.SourceX));
+            var baseRange =
+                GetRange(
+                    baseEdge.Select(
+                        p => p.SourceX));
 
-            var overlap = CalculateRangeOverlap(
-                baseRange.Min,
-                baseRange.Max,
-                adjacentRange.Min,
-                adjacentRange.Max);
+            var adjacentRange =
+                GetRange(
+                    adjacentEdge.Select(
+                        p => p.SourceX));
 
-            var smallerRange = Math.Min(
-                baseRange.Max - baseRange.Min,
-                adjacentRange.Max - adjacentRange.Min);
+            var overlap =
+                CalculateRangeOverlap(
+                    baseRange.Min,
+                    baseRange.Max,
+                    adjacentRange.Min,
+                    adjacentRange.Max);
 
-            var overlapRatio = smallerRange <= 0
-                ? 1.0
-                : overlap / smallerRange;
+            var smallerRange =
+                Math.Min(
+                    baseRange.Max - baseRange.Min,
+                    adjacentRange.Max - adjacentRange.Min);
 
-            if (overlapRatio < MinimumOverlapRatio)
+            var overlapRatio =
+                smallerRange <= 0
+                    ? 1.0
+                    : overlap / smallerRange;
+
+            if (overlapRatio <
+                MinimumOverlapRatio)
+            {
                 return null;
+            }
 
-            var translateY = baseTop
-                ? baseExtent.MaxY - adjacentExtent.MinY
-                : baseExtent.MinY - adjacentExtent.MaxY;
+            var translateY =
+                baseTop
+                    ? baseExtent.MaxY -
+                      adjacentExtent.MinY
+                    : baseExtent.MinY -
+                      adjacentExtent.MaxY;
 
-            var translateX = matches.Average(
-                pair => pair.Base.SourceX - pair.Adjacent.SourceX);
+            var translateX =
+                CalculateBestAxisTranslation(
+                    matches,
+                    useX: true);
 
-            var rms = CalculateRms(
-                matches,
-                translateX,
-                translateY);
+            var rms =
+                CalculateRms(
+                    matches,
+                    translateX,
+                    translateY);
 
             return new EdgeRelationship
             {
-                Direction = baseTop
-                    ? "Base.Top -> Adjacent.Bottom"
-                    : "Base.Bottom -> Adjacent.Top",
+                Direction =
+                    baseTop
+                        ? "Base.Top -> Adjacent.Bottom"
+                        : "Base.Bottom -> Adjacent.Top",
 
                 TranslateX = translateX,
                 TranslateY = translateY,
 
-                MatchedPointCount = matches.Count,
-                BaseEdgePointCount = baseEdge.Count,
+                MatchedPointCount =
+                    matches.Count,
+
+                BaseEdgePointCount =
+                    baseEdge.Count,
 
                 RmsError = rms,
 
                 Score =
-                    (matches.Count * 100.0) +
-                    (overlapRatio * 100.0) -
+                    matches.Count * 100.0 +
+                    overlapRatio * 100.0 -
                     rms
             };
         }
 
-        // -----------------------------------------------------------------
-        // EDGE DETECTION
-        // -----------------------------------------------------------------
+        private static double CalculateBestAxisTranslation(
+            List<PointPair> matches,
+            bool useX)
+        {
+            if (matches.Count == 0)
+                return 0.0;
+
+            var differences =
+                matches.Select(pair =>
+                {
+                    return useX
+                        ? pair.Base.SourceX -
+                          pair.Adjacent.SourceX
+                        : pair.Base.SourceY -
+                          pair.Adjacent.SourceY;
+                })
+                .OrderBy(v => v)
+                .ToList();
+
+            var middle =
+                differences.Count / 2;
+
+            if (differences.Count % 2 == 1)
+                return differences[middle];
+
+            return (
+                differences[middle - 1] +
+                differences[middle]) / 2.0;
+        }
 
         private static List<TiePoint> GetLeftEdgePoints(
             List<TiePoint> points,
             SheetExtent extent)
         {
             return points
-                .Where(p =>
-                    Math.Abs(p.SourceX - extent.MinX) <= EdgeTolerance)
+                .Where(
+                    p =>
+                        Math.Abs(
+                            p.SourceX -
+                            extent.MinX) <= EdgeTolerance)
                 .ToList();
         }
 
@@ -417,8 +516,11 @@ namespace MapStitcher.Business.Services
             SheetExtent extent)
         {
             return points
-                .Where(p =>
-                    Math.Abs(p.SourceX - extent.MaxX) <= EdgeTolerance)
+                .Where(
+                    p =>
+                        Math.Abs(
+                            p.SourceX -
+                            extent.MaxX) <= EdgeTolerance)
                 .ToList();
         }
 
@@ -427,8 +529,11 @@ namespace MapStitcher.Business.Services
             SheetExtent extent)
         {
             return points
-                .Where(p =>
-                    Math.Abs(p.SourceY - extent.MinY) <= EdgeTolerance)
+                .Where(
+                    p =>
+                        Math.Abs(
+                            p.SourceY -
+                            extent.MinY) <= EdgeTolerance)
                 .ToList();
         }
 
@@ -437,97 +542,126 @@ namespace MapStitcher.Business.Services
             SheetExtent extent)
         {
             return points
-                .Where(p =>
-                    Math.Abs(p.SourceY - extent.MaxY) <= EdgeTolerance)
+                .Where(
+                    p =>
+                        Math.Abs(
+                            p.SourceY -
+                            extent.MaxY) <= EdgeTolerance)
                 .ToList();
         }
-
-        // -----------------------------------------------------------------
-        // COORDINATE MATCHING
-        // -----------------------------------------------------------------
 
         private static List<PointPair> MatchByCoordinate(
             List<TiePoint> basePoints,
             List<TiePoint> adjacentPoints,
             bool useX)
         {
-            var matches = new List<PointPair>();
+            var matches =
+                new List<PointPair>();
 
-            // Sort by the coordinate running along the shared edge.
-            var orderedBase = useX
-                ? basePoints.OrderBy(p => p.SourceX).ToList()
-                : basePoints.OrderBy(p => p.SourceY).ToList();
+            var orderedBase =
+                useX
+                    ? basePoints
+                        .OrderBy(p => p.SourceX)
+                        .ToList()
+                    : basePoints
+                        .OrderBy(p => p.SourceY)
+                        .ToList();
 
-            var orderedAdjacent = useX
-                ? adjacentPoints.OrderBy(p => p.SourceX).ToList()
-                : adjacentPoints.OrderBy(p => p.SourceY).ToList();
+            var orderedAdjacent =
+                useX
+                    ? adjacentPoints
+                        .OrderBy(p => p.SourceX)
+                        .ToList()
+                    : adjacentPoints
+                        .OrderBy(p => p.SourceY)
+                        .ToList();
 
-            var usedAdjacent = new HashSet<int>();
+            var usedAdjacent =
+                new HashSet<int>();
 
             foreach (var basePoint in orderedBase)
             {
-                var baseCoordinate = useX
-                    ? basePoint.SourceX
-                    : basePoint.SourceY;
+                var baseCoordinate =
+                    useX
+                        ? basePoint.SourceX
+                        : basePoint.SourceY;
 
                 TiePoint? best = null;
-                double bestDifference = double.MaxValue;
+                double bestDifference =
+                    double.MaxValue;
 
-                foreach (var adjacentPoint in orderedAdjacent)
+                foreach (var adjacentPoint
+                    in orderedAdjacent)
                 {
-                    if (usedAdjacent.Contains(adjacentPoint.PointID))
+                    if (usedAdjacent.Contains(
+                            adjacentPoint.PointID))
+                    {
                         continue;
+                    }
 
-                    var adjacentCoordinate = useX
-                        ? adjacentPoint.SourceX
-                        : adjacentPoint.SourceY;
+                    var adjacentCoordinate =
+                        useX
+                            ? adjacentPoint.SourceX
+                            : adjacentPoint.SourceY;
 
                     var difference =
-                        Math.Abs(baseCoordinate - adjacentCoordinate);
+                        Math.Abs(
+                            baseCoordinate -
+                            adjacentCoordinate);
 
-                    if (difference <= AlignmentTolerance &&
-                        difference < bestDifference)
+                    if (difference <=
+                            AlignmentTolerance &&
+                        difference <
+                            bestDifference)
                     {
-                        best = adjacentPoint;
-                        bestDifference = difference;
+                        best =
+                            adjacentPoint;
+
+                        bestDifference =
+                            difference;
                     }
                 }
 
-                if (best != null)
-                {
-                    matches.Add(
-                        new PointPair
-                        {
-                            Base = basePoint,
-                            Adjacent = best
-                        });
+                if (best == null)
+                    continue;
 
-                    usedAdjacent.Add(best.PointID);
-                }
+                matches.Add(
+                    new PointPair
+                    {
+                        Base = basePoint,
+                        Adjacent = best
+                    });
+
+                usedAdjacent.Add(
+                    best.PointID);
             }
 
             return matches;
         }
 
-        // -----------------------------------------------------------------
-        // EXTENT
-        // -----------------------------------------------------------------
-
         private static SheetExtent CalculateExtent(
             List<TiePoint> points)
         {
+            var minX =
+                points.Min(p => p.SourceX);
+
+            var maxX =
+                points.Max(p => p.SourceX);
+
+            var minY =
+                points.Min(p => p.SourceY);
+
+            var maxY =
+                points.Max(p => p.SourceY);
+
             return new SheetExtent
             {
-                MinX = points.Min(p => p.SourceX),
-                MaxX = points.Max(p => p.SourceX),
-                MinY = points.Min(p => p.SourceY),
-                MaxY = points.Max(p => p.SourceY)
+                MinX = minX,
+                MaxX = maxX,
+                MinY = minY,
+                MaxY = maxY
             };
         }
-
-        // -----------------------------------------------------------------
-        // ERROR / OVERLAP
-        // -----------------------------------------------------------------
 
         private static double CalculateRms(
             List<PointPair> matches,
@@ -537,18 +671,25 @@ namespace MapStitcher.Business.Services
             if (matches.Count == 0)
                 return double.MaxValue;
 
-            var squaredErrors = matches.Select(pair =>
-            {
-                var dx =
-                    pair.Base.SourceX -
-                    (pair.Adjacent.SourceX + translateX);
+            var squaredErrors =
+                matches.Select(pair =>
+                {
+                    var dx =
+                        pair.Base.SourceX -
+                        (
+                            pair.Adjacent.SourceX +
+                            translateX
+                        );
 
-                var dy =
-                    pair.Base.SourceY -
-                    (pair.Adjacent.SourceY + translateY);
+                    var dy =
+                        pair.Base.SourceY -
+                        (
+                            pair.Adjacent.SourceY +
+                            translateY
+                        );
 
-                return (dx * dx) + (dy * dy);
-            });
+                    return dx * dx + dy * dy;
+                });
 
             return Math.Sqrt(
                 squaredErrors.Average());
@@ -560,8 +701,11 @@ namespace MapStitcher.Business.Services
             double minB,
             double maxB)
         {
-            var overlapMin = Math.Max(minA, minB);
-            var overlapMax = Math.Min(maxA, maxB);
+            var overlapMin =
+                Math.Max(minA, minB);
+
+            var overlapMax =
+                Math.Min(maxA, maxB);
 
             return Math.Max(
                 0,
@@ -571,17 +715,14 @@ namespace MapStitcher.Business.Services
         private static (double Min, double Max) GetRange(
             IEnumerable<double> values)
         {
-            var list = values.ToList();
+            var list =
+                values.ToList();
 
             return (
                 list.Min(),
                 list.Max()
             );
         }
-
-        // -----------------------------------------------------------------
-        // RESULT HELPERS
-        // -----------------------------------------------------------------
 
         private static MergeResult Failure(
             string technicalMessage,
@@ -599,16 +740,18 @@ namespace MapStitcher.Business.Services
             };
         }
 
-        // -----------------------------------------------------------------
-        // INTERNAL TYPES
-        // -----------------------------------------------------------------
-
         private sealed class SheetExtent
         {
             public double MinX { get; init; }
             public double MaxX { get; init; }
             public double MinY { get; init; }
             public double MaxY { get; init; }
+
+            public double Width =>
+                MaxX - MinX;
+
+            public double Height =>
+                MaxY - MinY;
         }
 
         private sealed class PointPair
@@ -619,12 +762,14 @@ namespace MapStitcher.Business.Services
 
         private sealed class EdgeRelationship
         {
-            public string Direction { get; init; } = string.Empty;
+            public string Direction { get; init; } =
+                string.Empty;
 
             public double TranslateX { get; init; }
             public double TranslateY { get; init; }
 
             public int MatchedPointCount { get; init; }
+
             public int BaseEdgePointCount { get; init; }
 
             public double RmsError { get; init; }
@@ -633,4 +778,3 @@ namespace MapStitcher.Business.Services
         }
     }
 }
-

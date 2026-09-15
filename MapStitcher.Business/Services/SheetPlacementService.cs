@@ -4,250 +4,736 @@ using MapStitcher.Repositories.Contracts;
 
 namespace MapStitcher.Business.Services
 {
-    // Placement strategy: prefer Laghu Reference index chaining for consistent
-    // grid adjacency, but fall back to centroid-offset spatial placement when no
-    // Laghu link exists. Offsets follow compass order (E, S, W, N) with the
-    // incoming sheet's centroid delta determining preferred direction.
     public class SheetPlacementService : ISheetPlacementService
     {
-        private static readonly (int dRow, int dCol)[] AdjacencyOffsets =
+        private static readonly (
+            int dRow,
+            int dCol
+        )[] AdjacencyOffsets =
         {
-            (0, 1),   // East
-            (1, 0),   // South
-            (0, -1),  // West
-            (-1, 0),  // North
-        };
-
-        private static readonly (int dRow, int dCol)[] CentroidOffsets =
-        {
-            (0, 1),   // East  — dx dominates, dx > 0
-            (0, -1),  // West  — dx dominates, dx < 0
-            (1, 0),   // South — dy dominates, dy > 0
-            (-1, 0),  // North — dy dominates, dy < 0
+            (0, 1),
+            (1, 0),
+            (0, -1),
+            (-1, 0)
         };
 
         private readonly ISurveySheetRepository _sheetRepo;
         private readonly ITiePointRepository _tiePointRepo;
 
-        public SheetPlacementService(ISurveySheetRepository sheetRepo, ITiePointRepository tiePointRepo)
+        public SheetPlacementService(
+            ISurveySheetRepository sheetRepo,
+            ITiePointRepository tiePointRepo)
         {
             _sheetRepo = sheetRepo;
             _tiePointRepo = tiePointRepo;
         }
 
-        public async Task<PlacementResult> AutoPlaceSheetAsync(int sheetId)
+        public async Task<PlacementResult> AutoPlaceSheetAsync(
+            int sheetId)
         {
-            var sheet = await _sheetRepo.GetByIdAsync(sheetId);
+            var sheet =
+                await _sheetRepo.GetByIdAsync(sheetId);
+
             if (sheet == null)
-                return Fail(sheetId, "Sheet not found.");
+                return Fail(
+                    sheetId,
+                    "Sheet not found.");
 
-            var siblings = await _sheetRepo.GetByProjectIdAsync(sheet.ProjectID);
-            var placedSheets = siblings
-                .Where(s => s.SheetID != sheetId && s.GridRow.HasValue && s.GridCol.HasValue)
-                .ToList();
+            var siblings =
+                await _sheetRepo.GetByProjectIdAsync(
+                    sheet.ProjectID);
 
-            if (!placedSheets.Any())
+            var placedSheets =
+                siblings
+                    .Where(
+                        s =>
+                            s.SheetID != sheetId &&
+                            s.GridRow.HasValue &&
+                            s.GridCol.HasValue)
+                    .ToList();
+
+            if (placedSheets.Count == 0)
             {
-                // First sheet in project — anchor at origin (0,0)
-                return await CommitPlacement(sheet, 0, 0, PlacementMode.Auto);
+                sheet.TransformTranslateX = 0.0;
+                sheet.TransformTranslateY = 0.0;
+
+                return await CommitPlacement(
+                    sheet,
+                    0,
+                    0,
+                    PlacementMode.Auto);
             }
 
-            // 1) Try Laghu Reference link first
-            var linkedSheet = FindLaghuLinkedSheet(sheet, placedSheets);
-            if (linkedSheet != null)
+            /*
+             * Geometry is now the primary placement signal.
+             *
+             * Labels and centroid calculations are intentionally not used.
+             */
+            var incomingPoints =
+                await _tiePointRepo.GetBySheetIdAsync(
+                    sheet.SheetID);
+
+            if (incomingPoints.Count == 0)
             {
-                var openCell = FindFirstOpenAdjacentCell(linkedSheet, placedSheets);
-                if (openCell != null)
-                    return await CommitPlacement(sheet, openCell.Value.row, openCell.Value.col, PlacementMode.Auto);
+                return Fail(
+                    sheetId,
+                    "Sheet contains no geometry coordinates.");
             }
 
-            // 2) Fallback: centroid-offset spatial placement when no Laghu link exists
-            var placement = await TryCentroidPlacement(sheet, placedSheets);
-            if (placement != null)
-                return placement;
+            var incomingExtent =
+                CalculateExtent(incomingPoints);
 
-            // 3) Last resort: find any empty cell in a simple row-major sweep
-            for (int r = 0; r < 20; r++)
-            {
-                for (int c = 0; c < 20; c++)
-                {
-                    if (!placedSheets.Any(s => s.GridRow == r && s.GridCol == c))
-                        return await CommitPlacement(sheet, r, c, PlacementMode.Auto);
-                }
-            }
-
-            return Fail(sheetId, "Could not find an empty grid cell. Increase grid size or use manual placement.");
-        }
-
-        private async Task<PlacementResult?> TryCentroidPlacement(SurveySheet sheet, List<SurveySheet> placedSheets)
-        {
-            var incomingPoints = await _tiePointRepo.GetBySheetIdAsync(sheet.SheetID);
-            var labeledPoints = incomingPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
-            if (!labeledPoints.Any())
-                return null;
-
-            var incomingCentroidX = labeledPoints.Average(p => p.SourceX);
-            var incomingCentroidY = labeledPoints.Average(p => p.SourceY);
+            /*
+             * Try to find the strongest geometric relationship with an
+             * already placed sheet.
+             */
+            var candidates =
+                new List<PlacementCandidate>();
 
             foreach (var placedSheet in placedSheets)
             {
-                var placedPoints = await _tiePointRepo.GetBySheetIdAsync(placedSheet.SheetID);
-                var placedLabeled = placedPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
-                if (!placedLabeled.Any())
+                var placedPoints =
+                    await _tiePointRepo.GetBySheetIdAsync(
+                        placedSheet.SheetID);
+
+                if (placedPoints.Count == 0)
                     continue;
 
-                var sharedLabels = labeledPoints
-                    .Select(p => p.PointLabel)
-                    .Intersect(placedLabeled.Select(p => p.PointLabel))
-                    .ToList();
+                var placedExtent =
+                    CalculateExtent(placedPoints);
 
-                if (!sharedLabels.Any())
-                    continue;
+                var candidate =
+                    FindBestPlacement(
+                        placedSheet,
+                        placedPoints,
+                        incomingPoints,
+                        placedExtent,
+                        incomingExtent);
 
-                var sharedIncoming = labeledPoints.Where(p => sharedLabels.Contains(p.PointLabel)).ToList();
-                var sharedPlaced = placedPoints.Where(p => sharedLabels.Contains(p.PointLabel)).ToList();
-
-                double placedCentroidX = sharedPlaced.Average(p => p.SourceX);
-                double placedCentroidY = sharedPlaced.Average(p => p.SourceY);
-
-                double dx = incomingCentroidX - placedCentroidX;
-                double dy = incomingCentroidY - placedCentroidY;
-
-                // Determine preferred direction from centroid delta
-                (int dRow, int dCol) preferred;
-                if (Math.Abs(dx) >= Math.Abs(dy))
-                    preferred = dx > 0 ? (0, -1) : (0, 1);  // West or East
-                else
-                    preferred = dy > 0 ? (1, 0) : (-1, 0);  // South or North
-
-                // Try preferred direction, then alternate
-                foreach (var (tdRow, tdCol) in new[] { preferred, (0, 1), (0, -1), (1, 0), (-1, 0) })
-                {
-                    int targetRow = placedSheet.GridRow!.Value + tdRow;
-                    int targetCol = placedSheet.GridCol!.Value + tdCol;
-
-                    if (placedSheets.Any(s => s.GridRow == targetRow && s.GridCol == targetCol))
-                        continue;
-
-                    return await CommitPlacement(sheet, targetRow, targetCol, PlacementMode.Auto);
-                }
+                if (candidate != null)
+                    candidates.Add(candidate);
             }
 
-            return null;
+            var bestCandidate =
+                candidates
+                    .OrderByDescending(c => c.Score)
+                    .ThenBy(c => c.AlignmentError)
+                    .FirstOrDefault();
+
+            if (bestCandidate != null)
+            {
+                return await CommitPlacement(
+                    sheet,
+                    bestCandidate.GridRow,
+                    bestCandidate.GridCol,
+                    PlacementMode.Auto);
+            }
+
+            /*
+             * If there is no geometric edge match yet, preserve the
+             * project's grid structure without using labels.
+             */
+            var fallback =
+                FindFirstOpenGridCell(
+                    placedSheets);
+
+            if (fallback != null)
+            {
+                return await CommitPlacement(
+                    sheet,
+                    fallback.Value.row,
+                    fallback.Value.col,
+                    PlacementMode.Auto);
+            }
+
+            return Fail(
+                sheetId,
+                "Could not find an empty grid cell.");
         }
 
-        // Returns every open grid cell adjacent to a Laghu-linked, already-placed
-        // sheet, for "Connect Here" highlighting in the UI.
-        public async Task<List<OpenSlot>> GetOpenTargetSlotsAsync(int sheetId)
+        public async Task<List<OpenSlot>> GetOpenTargetSlotsAsync(
+            int sheetId)
         {
-            var slots = new List<OpenSlot>();
+            var slots =
+                new List<OpenSlot>();
 
-            var sheet = await _sheetRepo.GetByIdAsync(sheetId);
+            var sheet =
+                await _sheetRepo.GetByIdAsync(sheetId);
+
             if (sheet == null)
                 return slots;
 
-            var placedSheets = (await _sheetRepo.GetByProjectIdAsync(sheet.ProjectID))
-                .Where(s => s.SheetID != sheetId && s.GridRow.HasValue && s.GridCol.HasValue)
+            var placedSheets =
+                (await _sheetRepo.GetByProjectIdAsync(
+                    sheet.ProjectID))
+                .Where(
+                    s =>
+                        s.SheetID != sheetId &&
+                        s.GridRow.HasValue &&
+                        s.GridCol.HasValue)
                 .ToList();
 
-            if (!placedSheets.Any())
-                return slots; // Nothing placed yet — would anchor at (0,0), no "connect" slots
-
-            var incomingPoints = await _tiePointRepo.GetBySheetIdAsync(sheet.SheetID);
-            var labeledPoints = incomingPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
-            if (!labeledPoints.Any())
+            if (placedSheets.Count == 0)
                 return slots;
 
             foreach (var placedSheet in placedSheets)
             {
-                var placedPoints = await _tiePointRepo.GetBySheetIdAsync(placedSheet.SheetID);
-                var placedLabeled = placedPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
-                if (!placedLabeled.Any())
-                    continue;
-
-                var sharedLabels = labeledPoints
-                    .Select(p => p.PointLabel)
-                    .Intersect(placedLabeled.Select(p => p.PointLabel))
-                    .ToList();
-
-                if (!sharedLabels.Any())
-                    continue;
-
-                double incomingCentroidX = labeledPoints.Average(p => p.SourceX);
-                double incomingCentroidY = labeledPoints.Average(p => p.SourceY);
-
-                var sharedPlacedPoints = placedPoints
-                    .Where(p => sharedLabels.Contains(p.PointLabel))
-                    .ToList();
-
-                double placedCentroidX = sharedPlacedPoints.Average(p => p.SourceX);
-                double placedCentroidY = sharedPlacedPoints.Average(p => p.SourceY);
-
-                double dx = incomingCentroidX - placedCentroidX;
-                double dy = incomingCentroidY - placedCentroidY;
-
-                // Determine preferred direction from centroid delta
-                var preferred = Math.Abs(dx) >= Math.Abs(dy)
-                    ? (dx > 0 ? (0, -1) : (0, 1))  // West or East
-                    : (dy > 0 ? (1, 0) : (-1, 0));  // South or North
-
-                // Add slots in preferred direction, then alternate
-                foreach (var (tdRow, tdCol) in new[] { preferred, (0, 1), (0, -1), (1, 0), (-1, 0) })
+                foreach (var (dRow, dCol)
+                    in AdjacencyOffsets)
                 {
-                    int targetRow = placedSheet.GridRow!.Value + tdRow;
-                    int targetCol = placedSheet.GridCol!.Value + tdCol;
+                    var row =
+                        placedSheet.GridRow!.Value +
+                        dRow;
 
-                    bool occupied = placedSheets.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
-                    bool alreadyListed = slots.Any(s => s.GridRow == targetRow && s.GridCol == targetCol);
+                    var col =
+                        placedSheet.GridCol!.Value +
+                        dCol;
 
-                    if (!occupied && !alreadyListed)
-                        slots.Add(new OpenSlot { GridRow = targetRow, GridCol = targetCol });
+                    var occupied =
+                        placedSheets.Any(
+                            s =>
+                                s.GridRow == row &&
+                                s.GridCol == col);
+
+                    var alreadyListed =
+                        slots.Any(
+                            s =>
+                                s.GridRow == row &&
+                                s.GridCol == col);
+
+                    if (!occupied &&
+                        !alreadyListed)
+                    {
+                        slots.Add(
+                            new OpenSlot
+                            {
+                                GridRow = row,
+                                GridCol = col
+                            });
+                    }
                 }
             }
 
             return slots;
         }
 
-        // Manual placement: user explicitly assigns grid row/col from the jigsaw board UI.
-        public async Task<PlacementResult> ManualPlaceSheetAsync(int sheetId, int gridRow, int gridCol)
+        public async Task<PlacementResult> ManualPlaceSheetAsync(
+            int sheetId,
+            int gridRow,
+            int gridCol)
         {
-            var sheet = await _sheetRepo.GetByIdAsync(sheetId);
-            if (sheet == null)
-                return Fail(sheetId, "Sheet not found.");
+            var sheet =
+                await _sheetRepo.GetByIdAsync(sheetId);
 
-            var siblings = await _sheetRepo.GetByProjectIdAsync(sheet.ProjectID);
-            bool occupied = siblings.Any(s => s.SheetID != sheetId && s.GridRow == gridRow && s.GridCol == gridCol);
+            if (sheet == null)
+            {
+                return Fail(
+                    sheetId,
+                    "Sheet not found.");
+            }
+
+            var siblings =
+                await _sheetRepo.GetByProjectIdAsync(
+                    sheet.ProjectID);
+
+            var occupied =
+                siblings.Any(
+                    s =>
+                        s.SheetID != sheetId &&
+                        s.GridRow == gridRow &&
+                        s.GridCol == gridCol);
 
             if (occupied)
-                return Fail(sheetId, $"Grid cell ({gridRow},{gridCol}) is already occupied by another sheet.");
-
-            return await CommitPlacement(sheet, gridRow, gridCol, PlacementMode.Manual);
-        }
-
-        // A link exists when either sheet's LaghuReferenceNumber equals the other's SheetNumber.
-        private static SurveySheet? FindLaghuLinkedSheet(SurveySheet sheet, List<SurveySheet> placedSheets)
-        {
-            return placedSheets.FirstOrDefault(placed =>
-                (!string.IsNullOrWhiteSpace(sheet.LaghuReferenceNumber) && sheet.LaghuReferenceNumber == placed.SheetNumber) ||
-                (!string.IsNullOrWhiteSpace(placed.LaghuReferenceNumber) && placed.LaghuReferenceNumber == sheet.SheetNumber));
-        }
-
-        private static (int row, int col)? FindFirstOpenAdjacentCell(SurveySheet anchor, List<SurveySheet> placedSheets)
-        {
-            foreach (var (dRow, dCol) in AdjacencyOffsets)
             {
-                int row = anchor.GridRow!.Value + dRow;
-                int col = anchor.GridCol!.Value + dCol;
+                return Fail(
+                    sheetId,
+                    $"Grid cell ({gridRow},{gridCol}) " +
+                    "is already occupied by another sheet.");
+            }
 
-                bool occupied = placedSheets.Any(s => s.GridRow == row && s.GridCol == col);
-                if (!occupied)
-                    return (row, col);
+            return await CommitPlacement(
+                sheet,
+                gridRow,
+                gridCol,
+                PlacementMode.Manual);
+        }
+
+        private static PlacementCandidate? FindBestPlacement(
+            SurveySheet placedSheet,
+            List<TiePoint> placedPoints,
+            List<TiePoint> incomingPoints,
+            SheetExtent placedExtent,
+            SheetExtent incomingExtent)
+        {
+            var candidates =
+                new List<PlacementCandidate?>();
+
+            candidates.Add(
+                EvaluateHorizontalPlacement(
+                    placedSheet,
+                    placedPoints,
+                    incomingPoints,
+                    placedExtent,
+                    incomingExtent,
+                    true));
+
+            candidates.Add(
+                EvaluateHorizontalPlacement(
+                    placedSheet,
+                    placedPoints,
+                    incomingPoints,
+                    placedExtent,
+                    incomingExtent,
+                    false));
+
+            candidates.Add(
+                EvaluateVerticalPlacement(
+                    placedSheet,
+                    placedPoints,
+                    incomingPoints,
+                    placedExtent,
+                    incomingExtent,
+                    true));
+
+            candidates.Add(
+                EvaluateVerticalPlacement(
+                    placedSheet,
+                    placedPoints,
+                    incomingPoints,
+                    placedExtent,
+                    incomingExtent,
+                    false));
+
+            return candidates
+                .Where(c => c != null)
+                .OrderByDescending(c => c!.Score)
+                .ThenBy(c => c!.AlignmentError)
+                .FirstOrDefault();
+        }
+
+        private static PlacementCandidate?
+            EvaluateHorizontalPlacement(
+                SurveySheet placedSheet,
+                List<TiePoint> placedPoints,
+                List<TiePoint> incomingPoints,
+                SheetExtent placedExtent,
+                SheetExtent incomingExtent,
+                bool incomingIsRight)
+        {
+            var baseEdge =
+                incomingIsRight
+                    ? GetRightEdgePoints(
+                        placedPoints,
+                        placedExtent)
+                    : GetLeftEdgePoints(
+                        placedPoints,
+                        placedExtent);
+
+            var incomingEdge =
+                incomingIsRight
+                    ? GetLeftEdgePoints(
+                        incomingPoints,
+                        incomingExtent)
+                    : GetRightEdgePoints(
+                        incomingPoints,
+                        incomingExtent);
+
+            if (baseEdge.Count < 2 ||
+                incomingEdge.Count < 2)
+            {
+                return null;
+            }
+
+            var matches =
+                MatchCoordinates(
+                    baseEdge,
+                    incomingEdge,
+                    false);
+
+            if (matches.Count < 2)
+                return null;
+
+            var baseRange =
+                GetRange(
+                    baseEdge.Select(
+                        p => p.SourceY));
+
+            var incomingRange =
+                GetRange(
+                    incomingEdge.Select(
+                        p => p.SourceY));
+
+            var overlap =
+                CalculateOverlapRatio(
+                    baseRange,
+                    incomingRange);
+
+            if (overlap < 0.50)
+                return null;
+
+            var alignmentError =
+                CalculateAlignmentError(
+                    matches,
+                    false);
+
+            var row =
+                placedSheet.GridRow!.Value;
+
+            var col =
+                placedSheet.GridCol!.Value +
+                (incomingIsRight ? 1 : -1);
+
+            var score =
+                matches.Count * 100.0 +
+                overlap * 100.0 -
+                alignmentError;
+
+            return new PlacementCandidate
+            {
+                GridRow = row,
+                GridCol = col,
+                Score = score,
+                AlignmentError = alignmentError
+            };
+        }
+
+        private static PlacementCandidate?
+            EvaluateVerticalPlacement(
+                SurveySheet placedSheet,
+                List<TiePoint> placedPoints,
+                List<TiePoint> incomingPoints,
+                SheetExtent placedExtent,
+                SheetExtent incomingExtent,
+                bool incomingIsTop)
+        {
+            var baseEdge =
+                incomingIsTop
+                    ? GetTopEdgePoints(
+                        placedPoints,
+                        placedExtent)
+                    : GetBottomEdgePoints(
+                        placedPoints,
+                        placedExtent);
+
+            var incomingEdge =
+                incomingIsTop
+                    ? GetBottomEdgePoints(
+                        incomingPoints,
+                        incomingExtent)
+                    : GetTopEdgePoints(
+                        incomingPoints,
+                        incomingExtent);
+
+            if (baseEdge.Count < 2 ||
+                incomingEdge.Count < 2)
+            {
+                return null;
+            }
+
+            var matches =
+                MatchCoordinates(
+                    baseEdge,
+                    incomingEdge,
+                    true);
+
+            if (matches.Count < 2)
+                return null;
+
+            var baseRange =
+                GetRange(
+                    baseEdge.Select(
+                        p => p.SourceX));
+
+            var incomingRange =
+                GetRange(
+                    incomingEdge.Select(
+                        p => p.SourceX));
+
+            var overlap =
+                CalculateOverlapRatio(
+                    baseRange,
+                    incomingRange);
+
+            if (overlap < 0.50)
+                return null;
+
+            var alignmentError =
+                CalculateAlignmentError(
+                    matches,
+                    true);
+
+            var row =
+                placedSheet.GridRow!.Value +
+                (incomingIsTop ? -1 : 1);
+
+            var col =
+                placedSheet.GridCol!.Value;
+
+            var score =
+                matches.Count * 100.0 +
+                overlap * 100.0 -
+                alignmentError;
+
+            return new PlacementCandidate
+            {
+                GridRow = row,
+                GridCol = col,
+                Score = score,
+                AlignmentError = alignmentError
+            };
+        }
+
+        private static List<TiePoint> GetLeftEdgePoints(
+            List<TiePoint> points,
+            SheetExtent extent)
+        {
+            return points
+                .Where(
+                    p =>
+                        Math.Abs(
+                            p.SourceX -
+                            extent.MinX) <= 25.0)
+                .ToList();
+        }
+
+        private static List<TiePoint> GetRightEdgePoints(
+            List<TiePoint> points,
+            SheetExtent extent)
+        {
+            return points
+                .Where(
+                    p =>
+                        Math.Abs(
+                            p.SourceX -
+                            extent.MaxX) <= 25.0)
+                .ToList();
+        }
+
+        private static List<TiePoint> GetBottomEdgePoints(
+            List<TiePoint> points,
+            SheetExtent extent)
+        {
+            return points
+                .Where(
+                    p =>
+                        Math.Abs(
+                            p.SourceY -
+                            extent.MinY) <= 25.0)
+                .ToList();
+        }
+
+        private static List<TiePoint> GetTopEdgePoints(
+            List<TiePoint> points,
+            SheetExtent extent)
+        {
+            return points
+                .Where(
+                    p =>
+                        Math.Abs(
+                            p.SourceY -
+                            extent.MaxY) <= 25.0)
+                .ToList();
+        }
+
+        private static List<PointPair> MatchCoordinates(
+            List<TiePoint> basePoints,
+            List<TiePoint> adjacentPoints,
+            bool useX)
+        {
+            var result =
+                new List<PointPair>();
+
+            var orderedBase =
+                useX
+                    ? basePoints.OrderBy(
+                        p => p.SourceX).ToList()
+                    : basePoints.OrderBy(
+                        p => p.SourceY).ToList();
+
+            var orderedAdjacent =
+                useX
+                    ? adjacentPoints.OrderBy(
+                        p => p.SourceX).ToList()
+                    : adjacentPoints.OrderBy(
+                        p => p.SourceY).ToList();
+
+            var used =
+                new HashSet<int>();
+
+            foreach (var basePoint in orderedBase)
+            {
+                var baseCoordinate =
+                    useX
+                        ? basePoint.SourceX
+                        : basePoint.SourceY;
+
+                TiePoint? best = null;
+                double bestDifference =
+                    double.MaxValue;
+
+                foreach (var adjacentPoint
+                    in orderedAdjacent)
+                {
+                    if (used.Contains(
+                            adjacentPoint.PointID))
+                    {
+                        continue;
+                    }
+
+                    var adjacentCoordinate =
+                        useX
+                            ? adjacentPoint.SourceX
+                            : adjacentPoint.SourceY;
+
+                    var difference =
+                        Math.Abs(
+                            baseCoordinate -
+                            adjacentCoordinate);
+
+                    if (difference <= 25.0 &&
+                        difference < bestDifference)
+                    {
+                        best =
+                            adjacentPoint;
+
+                        bestDifference =
+                            difference;
+                    }
+                }
+
+                if (best == null)
+                    continue;
+
+                result.Add(
+                    new PointPair
+                    {
+                        Base = basePoint,
+                        Adjacent = best
+                    });
+
+                used.Add(
+                    best.PointID);
+            }
+
+            return result;
+        }
+
+        private static double CalculateAlignmentError(
+            List<PointPair> matches,
+            bool useX)
+        {
+            if (matches.Count == 0)
+                return double.MaxValue;
+
+            var errors =
+                matches.Select(
+                    pair =>
+                    {
+                        var a =
+                            useX
+                                ? pair.Base.SourceX
+                                : pair.Base.SourceY;
+
+                        var b =
+                            useX
+                                ? pair.Adjacent.SourceX
+                                : pair.Adjacent.SourceY;
+
+                        var difference =
+                            a - b;
+
+                        return difference *
+                               difference;
+                    });
+
+            return Math.Sqrt(
+                errors.Average());
+        }
+
+        private static SheetExtent CalculateExtent(
+            List<TiePoint> points)
+        {
+            return new SheetExtent
+            {
+                MinX =
+                    points.Min(p => p.SourceX),
+
+                MaxX =
+                    points.Max(p => p.SourceX),
+
+                MinY =
+                    points.Min(p => p.SourceY),
+
+                MaxY =
+                    points.Max(p => p.SourceY)
+            };
+        }
+
+        private static double CalculateOverlapRatio(
+            (double Min, double Max) a,
+            (double Min, double Max) b)
+        {
+            var overlapMin =
+                Math.Max(a.Min, b.Min);
+
+            var overlapMax =
+                Math.Min(a.Max, b.Max);
+
+            var overlap =
+                Math.Max(
+                    0,
+                    overlapMax - overlapMin);
+
+            var smaller =
+                Math.Min(
+                    a.Max - a.Min,
+                    b.Max - b.Min);
+
+            return smaller <= 0
+                ? 1.0
+                : overlap / smaller;
+        }
+
+        private static (double Min, double Max)
+            GetRange(
+                IEnumerable<double> values)
+        {
+            var list =
+                values.ToList();
+
+            return (
+                list.Min(),
+                list.Max()
+            );
+        }
+
+        private static (int row, int col)?
+            FindFirstOpenGridCell(
+                List<SurveySheet> placedSheets)
+        {
+            for (var row = 0; row < 100; row++)
+            {
+                for (var col = 0; col < 100; col++)
+                {
+                    if (!placedSheets.Any(
+                            s =>
+                                s.GridRow == row &&
+                                s.GridCol == col))
+                    {
+                        return (row, col);
+                    }
+                }
             }
 
             return null;
         }
 
-        private async Task<PlacementResult> CommitPlacement(SurveySheet sheet, int row, int col, PlacementMode mode)
+        private async Task<PlacementResult>
+            CommitPlacement(
+                SurveySheet sheet,
+                int row,
+                int col,
+                PlacementMode mode)
         {
             sheet.GridRow = row;
             sheet.GridCol = col;
@@ -262,15 +748,43 @@ namespace MapStitcher.Business.Services
                 GridRow = row,
                 GridCol = col,
                 Mode = mode,
-                Message = $"Sheet placed at ({row},{col}) via {mode}."
+                Message =
+                    $"Sheet placed at ({row},{col}) via {mode}."
             };
         }
 
-        private static PlacementResult Fail(int sheetId, string message) => new PlacementResult
+        private static PlacementResult Fail(
+            int sheetId,
+            string message)
         {
-            Success = false,
-            SheetID = sheetId,
-            Message = message
-        };
+            return new PlacementResult
+            {
+                Success = false,
+                SheetID = sheetId,
+                Message = message
+            };
+        }
+
+        private sealed class SheetExtent
+        {
+            public double MinX { get; init; }
+            public double MaxX { get; init; }
+            public double MinY { get; init; }
+            public double MaxY { get; init; }
+        }
+
+        private sealed class PointPair
+        {
+            public TiePoint Base { get; init; } = null!;
+            public TiePoint Adjacent { get; init; } = null!;
+        }
+
+        private sealed class PlacementCandidate
+        {
+            public int GridRow { get; init; }
+            public int GridCol { get; init; }
+            public double Score { get; init; }
+            public double AlignmentError { get; init; }
+        }
     }
 }

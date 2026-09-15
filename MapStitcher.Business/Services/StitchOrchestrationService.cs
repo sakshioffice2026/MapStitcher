@@ -4,7 +4,8 @@ using MapStitcher.Repositories.Contracts;
 
 namespace MapStitcher.Business.Services
 {
-    public class StitchOrchestrationService : IStitchOrchestrationService
+    public class StitchOrchestrationService
+        : IStitchOrchestrationService
     {
         private readonly ISurveySheetRepository _sheetRepo;
         private readonly ISheetPlacementService _placementService;
@@ -20,78 +21,289 @@ namespace MapStitcher.Business.Services
             _mergeService = mergeService;
         }
 
-        public async Task<StitchResult> StitchAllAsync(int projectId)
+        public async Task<StitchResult> StitchAllAsync(
+            int projectId)
         {
-            var sheets = await _sheetRepo.GetByProjectIdAsync(projectId);
-            var result = new StitchResult { TotalSheets = sheets.Count };
+            var sheets =
+                await _sheetRepo.GetByProjectIdAsync(
+                    projectId);
 
-            await PlaceAllPossibleAsync(sheets);
-            await MergeAllPlacedNeighborsAsync(sheets, result);
+            var result =
+                new StitchResult
+                {
+                    TotalSheets = sheets.Count
+                };
 
-            result.PlacedCount = sheets.Count(s => s.GridRow.HasValue && s.GridCol.HasValue);
-            result.MergedCount = sheets.Count(s => s.Status == SheetStatus.Merged);
-            result.NeedsManualCheckCount = result.Outcomes.Count(o => o.FailureReason != null);
+            await PlaceAllPossibleAsync(
+                sheets);
+
+            await MergeAllPlacedNeighborsAsync(
+                sheets,
+                result);
+
+            result.PlacedCount =
+                sheets.Count(
+                    s =>
+                        s.GridRow.HasValue &&
+                        s.GridCol.HasValue);
+
+            result.MergedCount =
+                sheets.Count(
+                    s =>
+                        s.Status ==
+                        SheetStatus.Merged);
+
+            result.NeedsManualCheckCount =
+                result.Outcomes.Count(
+                    o =>
+                        o.FailureReason != null);
 
             return result;
         }
 
-        // Multiple passes: a sheet may only become placeable once a neighbor sheet
-        // (that shares tie points with it) has itself been placed in this same run.
-        private async Task PlaceAllPossibleAsync(List<SurveySheet> sheets)
+        private async Task PlaceAllPossibleAsync(
+            List<SurveySheet> sheets)
         {
-            bool progress = true;
-            while (progress)
-            {
-                progress = false;
+            var maxPasses =
+                Math.Max(
+                    sheets.Count * 2,
+                    1);
 
-                foreach (var sheet in sheets.Where(s => !s.GridRow.HasValue || !s.GridCol.HasValue))
+            for (var pass = 0;
+                 pass < maxPasses;
+                 pass++)
+            {
+                var progress = false;
+
+                foreach (
+                    var sheet in sheets.Where(
+                        s =>
+                            !s.GridRow.HasValue ||
+                            !s.GridCol.HasValue))
                 {
-                    var placement = await _placementService.AutoPlaceSheetAsync(sheet.SheetID);
+                    var placement =
+                        await _placementService
+                            .AutoPlaceSheetAsync(
+                                sheet.SheetID);
+
                     if (placement.Success)
                         progress = true;
                 }
+
+                if (!progress)
+                    break;
             }
         }
 
-        private async Task MergeAllPlacedNeighborsAsync(List<SurveySheet> sheets, StitchResult result)
+        private async Task MergeAllPlacedNeighborsAsync(
+            List<SurveySheet> sheets,
+            StitchResult result)
         {
-            var placedSheets = sheets.Where(s => s.GridRow.HasValue && s.GridCol.HasValue).ToList();
+            var placedSheets =
+                sheets
+                    .Where(
+                        s =>
+                            s.GridRow.HasValue &&
+                            s.GridCol.HasValue)
+                    .ToList();
 
+            var processed =
+                new HashSet<string>();
+
+            var maxPasses =
+                Math.Max(
+                    placedSheets.Count * 2,
+                    1);
+
+            for (var pass = 0;
+                 pass < maxPasses;
+                 pass++)
+            {
+                var progress = false;
+
+                foreach (var sheet in placedSheets)
+                {
+                    var neighbor =
+                        FindBestPlacedGridNeighbor(
+                            sheet,
+                            placedSheets);
+
+                    if (neighbor == null)
+                        continue;
+
+                    var pairKey =
+                        CreatePairKey(
+                            neighbor.SheetID,
+                            sheet.SheetID);
+
+                    if (processed.Contains(pairKey))
+                        continue;
+
+                    processed.Add(pairKey);
+
+                    /*
+                     * The merge service composes the base sheet's global
+                     * translation with the adjacent sheet's local
+                     * translation.
+                     */
+                    var mergeResult =
+                        await _mergeService
+                            .MergeSheetsAsync(
+                                neighbor.SheetID,
+                                sheet.SheetID);
+
+                    var outcome =
+                        new SheetStitchOutcome
+                        {
+                            SheetID =
+                                sheet.SheetID,
+
+                            SheetNumber =
+                                sheet.SheetNumber,
+
+                            Placed = true,
+
+                            Merged =
+                                mergeResult.Success,
+
+                            FailureReason =
+                                mergeResult.FailureReason
+                        };
+
+                    result.Outcomes.Add(
+                        outcome);
+
+                    if (mergeResult.Success)
+                        progress = true;
+                }
+
+                if (!progress)
+                    break;
+            }
+
+            /*
+             * Add outcomes for sheets that have no currently available
+             * grid neighbor.
+             */
             foreach (var sheet in placedSheets)
             {
-                if (sheet.Status == SheetStatus.Merged)
+                var alreadyReported =
+                    result.Outcomes.Any(
+                        o =>
+                            o.SheetID ==
+                            sheet.SheetID);
+
+                if (alreadyReported)
                     continue;
 
-                var neighbor = FindPlacedGridNeighbor(sheet, placedSheets);
-
-                var outcome = new SheetStitchOutcome
-                {
-                    SheetID = sheet.SheetID,
-                    SheetNumber = sheet.SheetNumber,
-                    Placed = true
-                };
+                var neighbor =
+                    FindBestPlacedGridNeighbor(
+                        sheet,
+                        placedSheets);
 
                 if (neighbor == null)
                 {
-                    // No uploaded sheet occupies an adjacent cell yet — this is a gap, not a failure.
-                    outcome.FailureReason = "Waiting on neighboring sheet upload";
-                    result.Outcomes.Add(outcome);
-                    continue;
-                }
+                    result.Outcomes.Add(
+                        new SheetStitchOutcome
+                        {
+                            SheetID =
+                                sheet.SheetID,
 
-                var mergeResult = await _mergeService.MergeSheetsAsync(neighbor.SheetID, sheet.SheetID);
-                outcome.Merged = mergeResult.Success;
-                outcome.FailureReason = mergeResult.FailureReason;
-                result.Outcomes.Add(outcome);
+                            SheetNumber =
+                                sheet.SheetNumber,
+
+                            Placed = true,
+
+                            Merged = false,
+
+                            FailureReason =
+                                "Waiting on neighboring sheet upload"
+                        });
+                }
             }
         }
 
-        private static SurveySheet? FindPlacedGridNeighbor(SurveySheet sheet, List<SurveySheet> placedSheets)
+        private static SurveySheet?
+            FindBestPlacedGridNeighbor(
+                SurveySheet sheet,
+                List<SurveySheet> placedSheets)
         {
-            return placedSheets.FirstOrDefault(n =>
-                n.SheetID != sheet.SheetID &&
-                ((n.GridRow == sheet.GridRow && Math.Abs(n.GridCol!.Value - sheet.GridCol!.Value) == 1) ||
-                 (n.GridCol == sheet.GridCol && Math.Abs(n.GridRow!.Value - sheet.GridRow!.Value) == 1)));
+            var neighbors =
+                placedSheets
+                    .Where(
+                        n =>
+                            n.SheetID != sheet.SheetID &&
+                            IsAdjacent(
+                                sheet,
+                                n))
+                    .ToList();
+
+            if (neighbors.Count == 0)
+                return null;
+
+            /*
+             * Prefer an already merged/global sheet as the base because
+             * its TransformTranslateX/Y already represents the global
+             * coordinate system.
+             */
+            var mergedNeighbor =
+                neighbors
+                    .Where(
+                        n =>
+                            n.Status ==
+                            SheetStatus.Merged)
+                    .OrderByDescending(
+                        n =>
+                            n.TransformTranslateX *
+                            n.TransformTranslateX +
+                            n.TransformTranslateY *
+                            n.TransformTranslateY)
+                    .FirstOrDefault();
+
+            if (mergedNeighbor != null)
+                return mergedNeighbor;
+
+            return neighbors.First();
+        }
+
+        private static bool IsAdjacent(
+            SurveySheet a,
+            SurveySheet b)
+        {
+            if (!a.GridRow.HasValue ||
+                !a.GridCol.HasValue ||
+                !b.GridRow.HasValue ||
+                !b.GridCol.HasValue)
+            {
+                return false;
+            }
+
+            var rowDifference =
+                Math.Abs(
+                    a.GridRow.Value -
+                    b.GridRow.Value);
+
+            var colDifference =
+                Math.Abs(
+                    a.GridCol.Value -
+                    b.GridCol.Value);
+
+            return
+                rowDifference + colDifference ==
+                1;
+        }
+
+        private static string CreatePairKey(
+            int first,
+            int second)
+        {
+            var min =
+                Math.Min(first, second);
+
+            var max =
+                Math.Max(first, second);
+
+            return $"{min}:{max}";
         }
     }
 }
