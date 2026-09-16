@@ -5,14 +5,14 @@ namespace MapStitcher.Web.Controllers
 {
     public class CadGridController : Controller
     {
-        private readonly ICadSheetGridService _gridService;
+        private readonly ISheetArrangementOrchestrator _arrangementService;
         private readonly IWebHostEnvironment _environment;
 
         public CadGridController(
-            ICadSheetGridService gridService,
+            ISheetArrangementOrchestrator arrangementService,
             IWebHostEnvironment environment)
         {
-            _gridService = gridService;
+            _arrangementService = arrangementService;
             _environment = environment;
         }
 
@@ -75,25 +75,18 @@ namespace MapStitcher.Web.Controllers
                         await file.CopyToAsync(stream);
                     }
 
-                    var result = await _gridService.BuildGridAsync(tempDirectory);
-                    result.SkippedFileNames = skipped;
+                    var result = await _arrangementService.ArrangeAsync(tempDirectory);
 
                     if (result.SheetCount == 0)
                     {
                         ViewBag.Error = skipped.Count > 0
                             ? $"No valid DWG/DXF files were accepted. " +
                               $"Skipped: {string.Join(", ", skipped)}"
-                            : "No DWG/DXF files found after upload.";
+                            : "No sheets could be arranged.";
                         return View();
                     }
 
-                    // Merge while temp files are still on disk (before finally deletes them).
-                    var exportsDir = Path.Combine(
-                        _environment.ContentRootPath,
-                        "CadGridExports");
-
-                    await _gridService.MergeGridAsync(result, exportsDir);
-
+                    result.SkippedFileNames = skipped;
                     return View("Result", result);
                 }
                 finally
@@ -111,31 +104,9 @@ namespace MapStitcher.Web.Controllers
             }
             catch (Exception ex)
             {
-                ViewBag.Error = $"Grid generation failed: {ex.Message}";
+                ViewBag.Error = $"Arrangement failed: {ex.Message}";
                 return View();
             }
         }
-
-        [HttpGet]
-        public IActionResult Download(string fileName)
-        {
-            if (string.IsNullOrWhiteSpace(fileName)
-                || fileName.Contains("..")
-                || fileName.Contains('/')
-                || fileName.Contains('\\'))
-            {
-                return BadRequest("Invalid file name.");
-            }
-
-            var filePath = Path.Combine(
-                _environment.ContentRootPath,
-                "CadGridExports",
-                fileName);
-
-            if (!System.IO.File.Exists(filePath))
-                return NotFound();
-
-            return PhysicalFile(filePath, "application/octet-stream", fileName);
-        }
     }
-}
+}    

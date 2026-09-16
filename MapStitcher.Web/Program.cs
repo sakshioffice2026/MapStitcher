@@ -25,6 +25,13 @@ builder.Services.AddScoped<ISheetBoundaryRepository, SheetBoundaryRepository>();
 builder.Services.AddScoped<ICadastralMergeService, CadastralMergeService>();
 builder.Services.AddScoped<ISheetPlacementService, SheetPlacementService>();
 builder.Services.AddScoped<IStitchOrchestrationService, StitchOrchestrationService>();
+
+// 
+builder.Services.AddScoped<ISheetArrangementOrchestrator, SheetArrangementOrchestrator>();
+builder.Services.AddScoped<IIndexMapExtractionService, IndexMapExtractionService>();
+builder.Services.AddScoped<ITopologyGridService, TopologyGridService>();
+builder.Services.AddScoped<INeatlineExtractionService, NeatlineExtractionService>();
+builder.Services.AddScoped<ISheetArrangementOrchestrator, SheetArrangementOrchestrator>();
 builder.Services.AddScoped<ICadastralExportService>(sp =>
 {
     var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();
