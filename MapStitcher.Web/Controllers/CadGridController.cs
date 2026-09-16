@@ -77,15 +77,22 @@ namespace MapStitcher.Web.Controllers
 
                     var result = await _arrangementService.ArrangeAsync(tempDirectory);
 
-                    if (result.SheetCount == 0)
+                    if (result.SheetCount == 0 && skipped.Count == files.Count)
                     {
-                        ViewBag.Error = skipped.Count > 0
-                            ? $"No valid DWG/DXF files were accepted. " +
-                              $"Skipped: {string.Join(", ", skipped)}"
-                            : "No sheets could be arranged.";
+                        // Nothing usable was even uploaded — no point rendering
+                        // an empty Result page.
+                        ViewBag.Error =
+                            $"No valid DWG/DXF files were accepted. Skipped: {string.Join(", ", skipped)}";
                         return View();
                     }
 
+                    // Even when nothing could be placed (SheetCount == 0), the
+                    // arrangement service's diagnostics — which sheet had no
+                    // centre number, which neighbour link failed reciprocity,
+                    // which referenced sheet wasn't uploaded — are the whole
+                    // point of this screen. Swallowing them behind a generic
+                    // "No sheets could be arranged." error hides exactly the
+                    // information needed to fix the input files.
                     result.SkippedFileNames = skipped;
                     return View("Result", result);
                 }
@@ -109,4 +116,4 @@ namespace MapStitcher.Web.Controllers
             }
         }
     }
-}    
+}

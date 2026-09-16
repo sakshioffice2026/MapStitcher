@@ -41,7 +41,14 @@ namespace MapStitcher.Business.Services
                 try
                 {
                     var neighbors = await _indexMapService.ExtractAsync(file, IndexMapLayerConfig.IndexGridLayer);
-                    var centerNumber = neighbors.CenterSheetNumber ?? Path.GetFileNameWithoutExtension(file);
+
+                    // Do NOT skip/continue here. TopologyGridService now places
+                    // a sheet with no centre number as its own standalone
+                    // component instead of excluding it — but only if it
+                    // actually receives the sheet. Passing null through lets
+                    // that handling work; filtering it out here bypasses it
+                    // entirely and also skips the neatline extraction below.
+                    var centerNumber = neighbors.CenterSheetNumber;
 
                     topologyInputs.Add(new SheetTopologyInput
                     {
