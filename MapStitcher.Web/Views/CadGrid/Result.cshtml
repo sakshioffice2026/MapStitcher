@@ -1,4 +1,4 @@
-﻿@model MapStitcher.Model.CadSheetGridResult
+@model MapStitcher.Model.CadSheetGridResult
 
 <!DOCTYPE html>
 <html>
@@ -6,9 +6,7 @@
 
     <meta charset="utf-8" />
 
-    <title>
-        CAD Sheet Grid Result
-    </title>
+    <title>CAD Sheet Grid Result</title>
 
     <style>
 
@@ -35,6 +33,7 @@
         .summary {
             display: flex;
             gap: 20px;
+            flex-wrap: wrap;
         }
 
         .summary-box {
@@ -59,8 +58,7 @@
             width: 100%;
         }
 
-        th,
-        td {
+        th, td {
             border: 1px solid #ddd;
             padding: 10px;
         }
@@ -73,13 +71,9 @@
             text-align: right;
         }
 
-        /*
-                 * Visual grid
-                 */
         .grid {
             display: grid;
-            grid-template-columns: repeat(
-            @Model.ColumnCount, minmax(180px, 1fr) );
+            grid-template-columns: repeat(@Model.ColumnCount, minmax(180px, 1fr));
             gap: 12px;
             margin-top: 20px;
         }
@@ -121,6 +115,46 @@
             background: #fff3cd;
         }
 
+        .banner-warning {
+            background: #fff3cd;
+            border-left: 4px solid #f0ad4e;
+            padding: 12px 15px;
+            margin-bottom: 18px;
+        }
+
+        .banner-success {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 12px 15px;
+        }
+
+        .banner-error {
+            background: #fdeaea;
+            border-left: 4px solid #dc3545;
+            padding: 12px 15px;
+            margin-top: 12px;
+        }
+
+        .download-btn {
+            display: inline-block;
+            margin-top: 14px;
+            padding: 10px 22px;
+            background: #0d6efd;
+            color: white;
+            text-decoration: none;
+            border-radius: 5px;
+            font-weight: bold;
+        }
+
+        .download-btn:hover {
+            background: #0b5ed7;
+        }
+
+        ul.msg-list {
+            margin: 8px 0 0 0;
+            padding-left: 20px;
+        }
+
     </style>
 
 </head>
@@ -131,46 +165,39 @@
 
         <div class="card">
 
-            <h1>
-                CAD Sheet Grid
-            </h1>
+            <h1>CAD Sheet Grid Result</h1>
+
+            @if (Model.SkippedFileNames.Count > 0)
+            {
+                <div class="banner-warning">
+
+                    <strong>@Model.SkippedFileNames.Count file(s) skipped</strong> — not DWG/DXF:
+
+                    <ul class="msg-list">
+                        @foreach (var name in Model.SkippedFileNames)
+                        {
+                            <li>@name</li>
+                        }
+                    </ul>
+
+                </div>
+            }
 
             <div class="summary">
 
                 <div class="summary-box">
-
-                    <div class="summary-label">
-                        Sheets
-                    </div>
-
-                    <div class="summary-value">
-                        @Model.SheetCount
-                    </div>
-
+                    <div class="summary-label">Sheets</div>
+                    <div class="summary-value">@Model.SheetCount</div>
                 </div>
 
                 <div class="summary-box">
-
-                    <div class="summary-label">
-                        Rows
-                    </div>
-
-                    <div class="summary-value">
-                        @Model.RowCount
-                    </div>
-
+                    <div class="summary-label">Rows</div>
+                    <div class="summary-value">@Model.RowCount</div>
                 </div>
 
                 <div class="summary-box">
-
-                    <div class="summary-label">
-                        Columns
-                    </div>
-
-                    <div class="summary-value">
-                        @Model.ColumnCount
-                    </div>
-
+                    <div class="summary-label">Columns</div>
+                    <div class="summary-value">@Model.ColumnCount</div>
                 </div>
 
             </div>
@@ -180,23 +207,64 @@
 
         <div class="card">
 
-            <h2>
-                Index Grid
-            </h2>
+            <h2>Merge Output</h2>
+
+            @if (!string.IsNullOrEmpty(Model.MergeOutputFileName))
+            {
+                <div class="banner-success">
+
+                    <strong>Merge successful.</strong>
+                    All @Model.SheetCount sheet(s) stitched into one DXF,
+                    positioned by grid row/column and normalised to a common origin.
+
+                    <br />
+
+                    <a class="download-btn"
+                       href="/CadGrid/Download?fileName=@Model.MergeOutputFileName">
+                        &#8659;&nbsp;Download @Model.MergeOutputFileName
+                    </a>
+
+                </div>
+            }
+            else
+            {
+                <div class="banner-error">
+                    <strong>Merge produced no output.</strong>
+                </div>
+            }
+
+            @if (Model.MergeErrors.Count > 0)
+            {
+                <div class="banner-error">
+
+                    <strong>Merge errors (@Model.MergeErrors.Count):</strong>
+
+                    <ul class="msg-list">
+                        @foreach (var err in Model.MergeErrors)
+                        {
+                            <li>@err</li>
+                        }
+                    </ul>
+
+                </div>
+            }
+
+        </div>
+
+
+        <div class="card">
+
+            <h2>Index Grid</h2>
 
             @if (Model.Sheets.Count == 0)
             {
-                <div class="empty">
-                    No CAD sheets found.
-                </div>
+                <div class="empty">No CAD sheets found.</div>
             }
             else
             {
                 <div class="grid">
 
-                    @foreach (
-                                    var sheet in Model.Sheets
-                                    .OrderBy(x => x.IndexNumber))
+                    @foreach (var sheet in Model.Sheets.OrderBy(x => x.IndexNumber))
                     {
                         <div class="sheet">
 
@@ -209,43 +277,17 @@
                             </div>
 
                             <div class="sheet-position">
-
-                                Row:
-                                @sheet.Row
-
-                                &nbsp;
-
-                                Column:
-                                @sheet.Column
-
+                                Row: @sheet.Row &nbsp; Column: @sheet.Column
                             </div>
 
                             <div class="sheet-cad">
-
-                                X:
-                                @sheet.MinX.ToString("F2")
-                                -
-                                @sheet.MaxX.ToString("F2")
-
-                                <br />
-
-                                Y:
-                                @sheet.MinY.ToString("F2")
-                                -
-                                @sheet.MaxY.ToString("F2")
-
+                                X: @sheet.MinX.ToString("F2") – @sheet.MaxX.ToString("F2")<br />
+                                Y: @sheet.MinY.ToString("F2") – @sheet.MaxY.ToString("F2")
                             </div>
 
                             <div class="sheet-position">
-
-                                Entities:
-                                @sheet.EntityCount
-
-                                <br />
-
-                                Laghu:
-                                @sheet.LaghuReferenceCount
-
+                                Entities: @sheet.EntityCount<br />
+                                Laghu: @sheet.LaghuReferenceCount
                             </div>
 
                         </div>
@@ -259,116 +301,44 @@
 
         <div class="card">
 
-            <h2>
-                Sheet Details
-            </h2>
+            <h2>Sheet Details</h2>
 
             <table>
 
                 <thead>
-
                     <tr>
-
-                        <th>
-                            Index
-                        </th>
-
-                        <th>
-                            Row
-                        </th>
-
-                        <th>
-                            Column
-                        </th>
-
-                        <th>
-                            File
-                        </th>
-
-                        <th>
-                            Min X
-                        </th>
-
-                        <th>
-                            Min Y
-                        </th>
-
-                        <th>
-                            Max X
-                        </th>
-
-                        <th>
-                            Max Y
-                        </th>
-
-                        <th>
-                            Width
-                        </th>
-
-                        <th>
-                            Height
-                        </th>
-
-                        <th>
-                            Laghu
-                        </th>
-
+                        <th>Index</th>
+                        <th>Row</th>
+                        <th>Col</th>
+                        <th>File</th>
+                        <th>Min X</th>
+                        <th>Min Y</th>
+                        <th>Max X</th>
+                        <th>Max Y</th>
+                        <th>Width</th>
+                        <th>Height</th>
+                        <th>Entities</th>
+                        <th>Laghu</th>
                     </tr>
-
                 </thead>
 
                 <tbody>
 
-                    @foreach (
-                                        var sheet in Model.Sheets
-                                        .OrderBy(x => x.IndexNumber))
+                    @foreach (var sheet in Model.Sheets.OrderBy(x => x.IndexNumber))
                     {
                         <tr>
-
-                            <td>
-                                @sheet.IndexNumber
-                            </td>
-
-                            <td>
-                                @sheet.Row
-                            </td>
-
-                            <td>
-                                @sheet.Column
-                            </td>
-
-                            <td>
-                                @sheet.FileName
-                            </td>
-
-                            <td class="number">
-                                @sheet.MinX.ToString("F3")
-                            </td>
-
-                            <td class="number">
-                                @sheet.MinY.ToString("F3")
-                            </td>
-
-                            <td class="number">
-                                @sheet.MaxX.ToString("F3")
-                            </td>
-
-                            <td class="number">
-                                @sheet.MaxY.ToString("F3")
-                            </td>
-
-                            <td class="number">
-                                @sheet.Width.ToString("F3")
-                            </td>
-
-                            <td class="number">
-                                @sheet.Height.ToString("F3")
-                            </td>
-
-                            <td>
-                                @sheet.LaghuReferenceCount
-                            </td>
-
+                            <td>@sheet.IndexNumber</td>
+                            <td>@sheet.Row</td>
+                            <td>@sheet.Column</td>
+                            <td>@sheet.FileName</td>
+                            <td class="number">@sheet.MinX.ToString("F3")</td>
+                            <td class="number">@sheet.MinY.ToString("F3")</td>
+                            <td class="number">@sheet.MaxX.ToString("F3")</td>
+                            <td class="number">@sheet.MaxY.ToString("F3")</td>
+                            <td class="number">@sheet.Width.ToString("F3")</td>
+                            <td class="number">@sheet.Height.ToString("F3")</td>
+                            <td class="number">@sheet.EntityCount</td>
+                            <td class="number">@sheet.LaghuReferenceCount</td>
                         </tr>
                     }
 

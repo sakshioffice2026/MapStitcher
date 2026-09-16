@@ -15,40 +15,17 @@ namespace MapStitcher.Business.Services
     public class CadCoordinateInspectionService
         : ICadCoordinateInspectionService
     {
-        private const string LaghuLayerName =
-            "Text_Adjacent_No";
-
-        /*
-         * Supported examples:
-         *
-         * लागू शिट नं. 4
-         * लागू शिट नं: 4
-         * लागू शिट क्र. 4
-         * लागू शिट क्र 4
-         * लागू शीट नं. 4
-         * लागू शीट क्र. 4
-         * Sheet No 4
-         * Sheet No. 4
-         * Sheet 4
-         * 4
-         * ६
-         *
-         * The last two are important because some CAD files
-         * store the actual reference number as a separate
-         * numeric TEXT entity on Text_Adjacent_No.
-         */
+        private const string LaghuLayerName = "Text_Adjacent_No";
 
         private static readonly Regex LaghuLabelRegex =
             new Regex(
-                @"(?:लागू|लागु)\s*(?:शिट|शीट|शिटचा|शीटचा)\s*(?:नं|क्र|क्रमांक|नंबर)\s*[:.\-]?\s*([0-9०-९]+)",
-                RegexOptions.Compiled |
-                RegexOptions.IgnoreCase);
+                @"(?:लागू|लागु)\s*(?:शिट|शीट|शिटचा|शीटचा)\s*(?:नं|क्र|क्रमांक|नंबर)\s*[:\.\-]?\s*([0-9०-९]+)",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex SheetLabelRegex =
             new Regex(
-                @"(?:sheet|sh\.?)\s*(?:no\.?|number|nr\.?)?\s*[:.\-]?\s*([0-9०-९]+)",
-                RegexOptions.Compiled |
-                RegexOptions.IgnoreCase);
+                @"(?:sheet|sh\.?)\s*(?:no\.?|number|nr\.?)?\s*[:\.\-]?\s*([0-9०-९]+)",
+                RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
         private static readonly Regex NumericOnlyRegex =
             new Regex(
@@ -57,7 +34,7 @@ namespace MapStitcher.Business.Services
 
         private static readonly Regex NumberAtEndRegex =
             new Regex(
-                @"(?:^|\s|[:.\-])([0-9०-९]{1,6})\s*$",
+                @"(?:^|\s|[:\.\-])([0-9०-९]{1,6})\s*$",
                 RegexOptions.Compiled);
 
         public Task<CadCoordinateInspectionResult> InspectFileAsync(
@@ -65,141 +42,88 @@ namespace MapStitcher.Business.Services
             string originalFileName)
         {
             if (string.IsNullOrWhiteSpace(filePath))
-            {
-                throw new ArgumentException(
-                    "CAD file path is required.",
-                    nameof(filePath));
-            }
+                throw new ArgumentException("CAD file path is required.", nameof(filePath));
 
             if (!System.IO.File.Exists(filePath))
+                throw new System.IO.FileNotFoundException("CAD file was not found.", filePath);
+
+            var extension = System.IO.Path
+                .GetExtension(filePath)
+                .ToLowerInvariant();
+
+            if (extension != ".dwg" && extension != ".dxf")
+                throw new InvalidOperationException("Only DWG and DXF files are supported.");
+
+            var sheetNumber = System.IO.Path
+                .GetFileNameWithoutExtension(originalFileName);
+
+            var result = new CadCoordinateInspectionResult
             {
-                throw new System.IO.FileNotFoundException(
-                    "CAD file was not found.",
-                    filePath);
-            }
+                SheetNumber = sheetNumber
+            };
 
-            var extension =
-                System.IO.Path
-                    .GetExtension(filePath)
-                    .ToLowerInvariant();
+            CadDocument document = extension == ".dwg"
+                ? DwgReader.Read(filePath)
+                : DxfReader.Read(filePath);
 
-            if (extension != ".dwg" &&
-                extension != ".dxf")
-            {
-                throw new InvalidOperationException(
-                    "Only DWG and DXF files are supported.");
-            }
-
-            var sheetNumber =
-                System.IO.Path
-                    .GetFileNameWithoutExtension(
-                        originalFileName);
-
-            var result =
-                new CadCoordinateInspectionResult
-                {
-                    SheetNumber = sheetNumber
-                };
-
-            CadDocument document;
-
-            if (extension == ".dwg")
-            {
-                document =
-                    DwgReader.Read(filePath);
-            }
-            else
-            {
-                document =
-                    DxfReader.Read(filePath);
-            }
+            int entityCount = 0;
 
             foreach (var entity in document.Entities)
             {
                 try
                 {
-                    ProcessEntity(
-                        entity,
-                        result);
+                    if (ProcessEntity(entity, result))
+                        entityCount++;
                 }
                 catch
                 {
-                    /*
-                     * Do not allow one bad/unsupported CAD
-                     * entity to stop the complete inspection.
-                     */
+                    // Do not allow one bad/unsupported CAD entity to stop the inspection.
                 }
             }
 
-            result.EntityCount =
-                result.Coordinates.Count;
+            result.EntityCount = entityCount;
 
             CalculateExtents(result);
 
             return Task.FromResult(result);
         }
 
-        private void ProcessEntity(
+        private bool ProcessEntity(
             Entity entity,
             CadCoordinateInspectionResult result)
         {
             switch (entity)
             {
                 case TextEntity textEntity:
-
-                    ProcessText(
-                        textEntity,
-                        result);
-
-                    break;
+                    ProcessText(textEntity, result);
+                    return true;
 
                 case MText mText:
-
-                    ProcessMText(
-                        mText,
-                        result);
-
-                    break;
+                    ProcessMText(mText, result);
+                    return true;
 
                 case Insert insert:
-
-                    ProcessInsert(
-                        insert,
-                        result);
-
-                    break;
+                    ProcessInsert(insert, result);
+                    return true;
 
                 case LwPolyline lwPolyline:
-
-                    ProcessLwPolyline(
-                        lwPolyline,
-                        result);
-
-                    break;
+                    ProcessLwPolyline(lwPolyline, result);
+                    return true;
 
                 case Polyline2D polyline2D:
-
-                    ProcessPolyline2D(
-                        polyline2D,
-                        result);
-
-                    break;
+                    ProcessPolyline2D(polyline2D, result);
+                    return true;
 
                 case Line line:
-
-                    ProcessLine(
-                        line,
-                        result);
-
-                    break;
+                    ProcessLine(line, result);
+                    return true;
 
                 case Circle circle:
+                    ProcessCircle(circle, result);
+                    return true;
 
-                    ProcessCircle(
-                        circle,
-                        result);
-
-                    break;
+                default:
+                    return false;
             }
         }
 
@@ -207,138 +131,53 @@ namespace MapStitcher.Business.Services
             TextEntity entity,
             CadCoordinateInspectionResult result)
         {
-            var x =
-                entity.InsertPoint.X;
+            var x = entity.InsertPoint.X;
+            var y = entity.InsertPoint.Y;
+            var text = DecodeText(entity.Value);
+            var layerName = entity.Layer?.Name ?? string.Empty;
+            var laghuReferenceNumber = ExtractLaghuReferenceNumber(text, layerName);
 
-            var y =
-                entity.InsertPoint.Y;
-
-            var text =
-                DecodeText(
-                    entity.Value);
-
-            var layerName =
-                entity.Layer?.Name ??
-                string.Empty;
-
-            var laghuReferenceNumber =
-                ExtractLaghuReferenceNumber(
-                    text,
-                    layerName);
-
-            AddCoordinate(
-                result,
-                "TEXT",
-                layerName,
-                text,
-                x,
-                y,
-                true,
-                laghuReferenceNumber,
-                "Text");
-
-            TryAddLaghuReference(
-                result,
-                text,
-                layerName,
-                x,
-                y);
+            AddCoordinate(result, "TEXT", layerName, text, x, y, true, laghuReferenceNumber, "Text");
+            TryAddLaghuReference(result, text, layerName, x, y);
         }
 
         private void ProcessMText(
             MText entity,
             CadCoordinateInspectionResult result)
         {
-            var x =
-                entity.InsertPoint.X;
+            var x = entity.InsertPoint.X;
+            var y = entity.InsertPoint.Y;
+            var text = DecodeText(entity.Value);
+            var layerName = entity.Layer?.Name ?? string.Empty;
+            var laghuReferenceNumber = ExtractLaghuReferenceNumber(text, layerName);
 
-            var y =
-                entity.InsertPoint.Y;
-
-            var text =
-                DecodeText(
-                    entity.Value);
-
-            var layerName =
-                entity.Layer?.Name ??
-                string.Empty;
-
-            var laghuReferenceNumber =
-                ExtractLaghuReferenceNumber(
-                    text,
-                    layerName);
-
-            AddCoordinate(
-                result,
-                "MTEXT",
-                layerName,
-                text,
-                x,
-                y,
-                true,
-                laghuReferenceNumber,
-                "MText");
-
-            TryAddLaghuReference(
-                result,
-                text,
-                layerName,
-                x,
-                y);
+            AddCoordinate(result, "MTEXT", layerName, text, x, y, true, laghuReferenceNumber, "MText");
+            TryAddLaghuReference(result, text, layerName, x, y);
         }
 
         private void ProcessInsert(
             Insert entity,
             CadCoordinateInspectionResult result)
         {
-            var x =
-                entity.InsertPoint.X;
+            var x = entity.InsertPoint.X;
+            var y = entity.InsertPoint.Y;
+            var layerName = entity.Layer?.Name ?? string.Empty;
 
-            var y =
-                entity.InsertPoint.Y;
-
-            var layerName =
-                entity.Layer?.Name ??
-                string.Empty;
-
-            AddCoordinate(
-                result,
-                "INSERT",
-                layerName,
-                null,
-                x,
-                y,
-                true,
-                null,
-                "Block Insert");
+            AddCoordinate(result, "INSERT", layerName, null, x, y, true, null, "Block Insert");
         }
 
         private void ProcessLwPolyline(
             LwPolyline entity,
             CadCoordinateInspectionResult result)
         {
-            var layerName =
-                entity.Layer?.Name ??
-                string.Empty;
+            var layerName = entity.Layer?.Name ?? string.Empty;
 
             foreach (var vertex in entity.Vertices)
             {
-                var x =
-                    vertex.Location.X;
-
-                var y =
-                    vertex.Location.Y;
-
                 AddCoordinate(
-                    result,
-                    "LWPOLYLINE",
-                    layerName,
-                    null,
-                    x,
-                    y,
-                    false,
-                    null,
-                    "Polyline Vertex");
+                    result, "LWPOLYLINE", layerName, null,
+                    vertex.Location.X, vertex.Location.Y,
+                    false, null, "Polyline Vertex");
             }
         }
 
@@ -346,28 +185,14 @@ namespace MapStitcher.Business.Services
             Polyline2D entity,
             CadCoordinateInspectionResult result)
         {
-            var layerName =
-                entity.Layer?.Name ??
-                string.Empty;
+            var layerName = entity.Layer?.Name ?? string.Empty;
 
             foreach (var vertex in entity.Vertices)
             {
-                var x =
-                    vertex.Location.X;
-
-                var y =
-                    vertex.Location.Y;
-
                 AddCoordinate(
-                    result,
-                    "POLYLINE2D",
-                    layerName,
-                    null,
-                    x,
-                    y,
-                    false,
-                    null,
-                    "Polyline Vertex");
+                    result, "POLYLINE2D", layerName, null,
+                    vertex.Location.X, vertex.Location.Y,
+                    false, null, "Polyline Vertex");
             }
         }
 
@@ -375,51 +200,26 @@ namespace MapStitcher.Business.Services
             Line entity,
             CadCoordinateInspectionResult result)
         {
-            var layerName =
-                entity.Layer?.Name ??
-                string.Empty;
+            var layerName = entity.Layer?.Name ?? string.Empty;
 
-            AddCoordinate(
-                result,
-                "LINE",
-                layerName,
-                null,
-                entity.StartPoint.X,
-                entity.StartPoint.Y,
-                false,
-                null,
-                "Line Start");
+            AddCoordinate(result, "LINE", layerName, null,
+                entity.StartPoint.X, entity.StartPoint.Y,
+                false, null, "Line Start");
 
-            AddCoordinate(
-                result,
-                "LINE",
-                layerName,
-                null,
-                entity.EndPoint.X,
-                entity.EndPoint.Y,
-                false,
-                null,
-                "Line End");
+            AddCoordinate(result, "LINE", layerName, null,
+                entity.EndPoint.X, entity.EndPoint.Y,
+                false, null, "Line End");
         }
 
         private void ProcessCircle(
             Circle entity,
             CadCoordinateInspectionResult result)
         {
-            var layerName =
-                entity.Layer?.Name ??
-                string.Empty;
+            var layerName = entity.Layer?.Name ?? string.Empty;
 
-            AddCoordinate(
-                result,
-                "CIRCLE",
-                layerName,
-                null,
-                entity.Center.X,
-                entity.Center.Y,
-                false,
-                null,
-                "Circle Center");
+            AddCoordinate(result, "CIRCLE", layerName, null,
+                entity.Center.X, entity.Center.Y,
+                false, null, "Circle Center");
         }
 
         private void AddCoordinate(
@@ -433,39 +233,19 @@ namespace MapStitcher.Business.Services
             string? laghuReferenceNumber,
             string shape)
         {
-            result.Coordinates.Add(
-                new CadCoordinateViewModel
-                {
-                    SheetID =
-                        result.SheetID,
-
-                    SheetNumber =
-                        result.SheetNumber,
-
-                    EntityType =
-                        entityType,
-
-                    LayerName =
-                        layerName,
-
-                    Text =
-                        text,
-
-                    X =
-                        x,
-
-                    Y =
-                        y,
-
-                    HasInsertionPoint =
-                        hasInsertionPoint,
-
-                    LaghuReferenceNumber =
-                        laghuReferenceNumber,
-
-                    Shape =
-                        shape
-                });
+            result.Coordinates.Add(new CadCoordinateViewModel
+            {
+                SheetID = result.SheetID,
+                SheetNumber = result.SheetNumber,
+                EntityType = entityType,
+                LayerName = layerName,
+                Text = text,
+                X = x,
+                Y = y,
+                HasInsertionPoint = hasInsertionPoint,
+                LaghuReferenceNumber = laghuReferenceNumber,
+                Shape = shape
+            });
         }
 
         private void TryAddLaghuReference(
@@ -476,32 +256,17 @@ namespace MapStitcher.Business.Services
             double y)
         {
             if (string.IsNullOrWhiteSpace(text))
-            {
                 return;
-            }
 
-            var decodedText =
-                DecodeText(text)
-                    .Trim();
+            // text is already decoded by callers — no second DecodeText call needed.
+            var decodedText = text.Trim();
 
-            var referenceNumber =
-                ExtractLaghuReferenceNumber(
-                    decodedText,
-                    layerName);
+            var referenceNumber = ExtractLaghuReferenceNumber(decodedText, layerName);
 
-            if (string.IsNullOrWhiteSpace(
-                    referenceNumber))
-            {
+            if (string.IsNullOrWhiteSpace(referenceNumber))
                 return;
-            }
 
-            AddLaghuReference(
-                result,
-                referenceNumber,
-                decodedText,
-                layerName,
-                x,
-                y);
+            AddLaghuReference(result, referenceNumber, decodedText, layerName, x, y);
         }
 
         private void AddLaghuReference(
@@ -512,165 +277,65 @@ namespace MapStitcher.Business.Services
             double x,
             double y)
         {
-            if (string.IsNullOrWhiteSpace(
-                    referenceNumber))
-            {
+            if (string.IsNullOrWhiteSpace(referenceNumber))
                 return;
-            }
 
-            /*
-             * Do not create duplicate references when the
-             * same CAD text is represented more than once.
-             */
-            var alreadyExists =
-                result.LaghuReferences.Any(
-                    reference =>
-                        string.Equals(
-                            reference.ReferenceNumber,
-                            referenceNumber,
-                            StringComparison.OrdinalIgnoreCase)
-                        &&
-                        Math.Abs(
-                            reference.X - x) <
-                            0.000001
-                        &&
-                        Math.Abs(
-                            reference.Y - y) <
-                            0.000001);
+            var alreadyExists = result.LaghuReferences.Any(reference =>
+                string.Equals(
+                    reference.ReferenceNumber,
+                    referenceNumber,
+                    StringComparison.OrdinalIgnoreCase)
+                && Math.Abs(reference.X - x) < 0.000001
+                && Math.Abs(reference.Y - y) < 0.000001);
 
             if (alreadyExists)
-            {
                 return;
-            }
 
-            result.LaghuReferences.Add(
-                new LaghuReferenceViewModel
-                {
-                    ReferenceNumber =
-                        referenceNumber,
-
-                    Text =
-                        text,
-
-                    LayerName =
-                        layerName,
-
-                    X =
-                        x,
-
-                    Y =
-                        y
-                });
+            result.LaghuReferences.Add(new LaghuReferenceViewModel
+            {
+                ReferenceNumber = referenceNumber,
+                Text = text,
+                LayerName = layerName,
+                X = x,
+                Y = y
+            });
         }
 
-        private static string?
-            ExtractLaghuReferenceNumber(
-                string? text,
-                string? layerName)
+        private static string? ExtractLaghuReferenceNumber(
+            string? text,
+            string? layerName)
         {
             if (string.IsNullOrWhiteSpace(text))
-            {
                 return null;
-            }
 
-            var decoded =
-                DecodeText(text)
-                    .Trim();
+            var decoded = DecodeText(text).Trim();
 
-            /*
-             * -------------------------------------------------
-             * 1. Full Marathi Laghu reference
-             * -------------------------------------------------
-             *
-             * Example:
-             *
-             * लागू शिट नं. 4
-             * लागू शिट क्र. 6
-             * लागू शीट नं: 4
-             */
-            var match =
-                LaghuLabelRegex.Match(
-                    decoded);
-
+            var match = LaghuLabelRegex.Match(decoded);
             if (match.Success)
-            {
-                return NormalizeReferenceNumber(
-                    match.Groups[1].Value);
-            }
+                return NormalizeReferenceNumber(match.Groups[1].Value);
 
-            /*
-             * -------------------------------------------------
-             * 2. English sheet label
-             * -------------------------------------------------
-             *
-             * Example:
-             *
-             * Sheet No 4
-             * Sheet No. 6
-             */
-            match =
-                SheetLabelRegex.Match(
-                    decoded);
-
+            match = SheetLabelRegex.Match(decoded);
             if (match.Success)
-            {
-                return NormalizeReferenceNumber(
-                    match.Groups[1].Value);
-            }
+                return NormalizeReferenceNumber(match.Groups[1].Value);
 
-            /*
-             * -------------------------------------------------
-             * 3. Numeric-only text
-             * -------------------------------------------------
-             *
-             * This is very important.
-             *
-             * Many CAD drawings put:
-             *
-             * 4
-             * 6
-             *
-             * as separate TEXT entities on the
-             * Text_Adjacent_No layer.
-             */
             if (IsLaghuLayer(layerName))
             {
-                match =
-                    NumericOnlyRegex.Match(
-                        decoded);
-
+                match = NumericOnlyRegex.Match(decoded);
                 if (match.Success)
-                {
-                    return NormalizeReferenceNumber(
-                        match.Groups[1].Value);
-                }
+                    return NormalizeReferenceNumber(match.Groups[1].Value);
 
-                /*
-                 * Sometimes CAD formatting leaves small
-                 * prefixes/suffixes around the number.
-                 */
-                match =
-                    NumberAtEndRegex.Match(
-                        decoded);
-
+                match = NumberAtEndRegex.Match(decoded);
                 if (match.Success)
-                {
-                    return NormalizeReferenceNumber(
-                        match.Groups[1].Value);
-                }
+                    return NormalizeReferenceNumber(match.Groups[1].Value);
             }
 
             return null;
         }
 
-        private static bool IsLaghuLayer(
-            string? layerName)
+        private static bool IsLaghuLayer(string? layerName)
         {
-            if (string.IsNullOrWhiteSpace(
-                    layerName))
-            {
+            if (string.IsNullOrWhiteSpace(layerName))
                 return false;
-            }
 
             return string.Equals(
                 layerName.Trim(),
@@ -678,93 +343,42 @@ namespace MapStitcher.Business.Services
                 StringComparison.OrdinalIgnoreCase);
         }
 
-        private static string
-            NormalizeReferenceNumber(
-                string value)
+        private static string NormalizeReferenceNumber(string value)
         {
-            if (string.IsNullOrWhiteSpace(
-                    value))
-            {
+            if (string.IsNullOrWhiteSpace(value))
                 return string.Empty;
-            }
 
-            var result =
-                value.Trim();
+            var chars = value.Trim().ToCharArray();
 
-            /*
-             * Convert Devanagari digits to normal
-             * 0-9 digits.
-             *
-             * ०१२३४५६७८९
-             * becomes
-             * 0123456789
-             */
-            var chars =
-                result.ToCharArray();
-
-            for (var i = 0;
-                 i < chars.Length;
-                 i++)
+            for (var i = 0; i < chars.Length; i++)
             {
-                switch (chars[i])
+                chars[i] = chars[i] switch
                 {
-                    case '०':
-                        chars[i] = '0';
-                        break;
-
-                    case '१':
-                        chars[i] = '1';
-                        break;
-
-                    case '२':
-                        chars[i] = '2';
-                        break;
-
-                    case '३':
-                        chars[i] = '3';
-                        break;
-
-                    case '४':
-                        chars[i] = '4';
-                        break;
-
-                    case '५':
-                        chars[i] = '5';
-                        break;
-
-                    case '६':
-                        chars[i] = '6';
-                        break;
-
-                    case '७':
-                        chars[i] = '7';
-                        break;
-
-                    case '८':
-                        chars[i] = '8';
-                        break;
-
-                    case '९':
-                        chars[i] = '9';
-                        break;
-                }
+                    '०' => '0',
+                    '१' => '1',
+                    '२' => '2',
+                    '३' => '3',
+                    '४' => '4',
+                    '५' => '5',
+                    '६' => '6',
+                    '७' => '7',
+                    '८' => '8',
+                    '९' => '9',
+                    _ => chars[i]
+                };
             }
 
             return new string(chars);
         }
 
-        private static string DecodeText(
-            string? text)
+        private static string DecodeText(string? text)
         {
             if (string.IsNullOrEmpty(text))
-            {
                 return string.Empty;
-            }
 
             try
             {
-                return DxfUnicodeEscapeDecoder
-                    .Decode(text);
+                return DxfUnicodeEscapeDecoder.Decode(text);
             }
             catch
             {
@@ -772,8 +386,7 @@ namespace MapStitcher.Business.Services
             }
         }
 
-        private static void CalculateExtents(
-            CadCoordinateInspectionResult result)
+        private static void CalculateExtents(CadCoordinateInspectionResult result)
         {
             if (result.Coordinates.Count == 0)
             {
@@ -781,29 +394,13 @@ namespace MapStitcher.Business.Services
                 result.MinY = 0;
                 result.MaxX = 0;
                 result.MaxY = 0;
-
                 return;
             }
 
-            result.MinX =
-                result.Coordinates.Min(
-                    coordinate =>
-                        coordinate.X);
-
-            result.MinY =
-                result.Coordinates.Min(
-                    coordinate =>
-                        coordinate.Y);
-
-            result.MaxX =
-                result.Coordinates.Max(
-                    coordinate =>
-                        coordinate.X);
-
-            result.MaxY =
-                result.Coordinates.Max(
-                    coordinate =>
-                        coordinate.Y);
+            result.MinX = result.Coordinates.Min(c => c.X);
+            result.MinY = result.Coordinates.Min(c => c.Y);
+            result.MaxX = result.Coordinates.Max(c => c.X);
+            result.MaxY = result.Coordinates.Max(c => c.Y);
         }
     }
 }
