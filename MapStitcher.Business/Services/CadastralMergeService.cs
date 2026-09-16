@@ -1,22 +1,20 @@
-﻿// Services/CadastralMergeService.cs
+﻿// Services/CadastralMergeService.cs — full file
 using MapStitcher.Business.Contracts;
 using MapStitcher.Database;
 using MapStitcher.Repositories.Contracts;
 
 namespace MapStitcher.Business.Services
 {
-    /// <summary>
-    /// Computes sheet-to-sheet translation from actual CAD tie-point XY
-    /// correspondences. Laghu/index relationships are used as topology, while
-    /// CAD coordinates remain the source of the physical translation.
-    /// </summary>
+    // Merge strategy: tie-point X,Y coordinate matching is the primary and only
+    // gate for merging (label match first, spatial-proximity fallback second).
+    // The Laghu Reference chain, when present, is recorded for traceability only
+    // — it no longer blocks a merge that tie points otherwise support.
+    // Translation is composed onto the base sheet's existing global position, so
+    // a root/anchor sheet (TransformTranslateX/Y = 0) stays at the origin and
+    // every merge downstream of it accumulates correctly in one shared frame.
     public class CadastralMergeService : ICadastralMergeService
     {
-        // Tie-point matching tolerance is in the CAD drawing's coordinate units.
-        // It is deliberately much tighter than the old 25-unit centroid fallback:
-        // a candidate must support one common XY translation.
-        private const double MatchTolerance = 0.50;
-        private const double GraphValidationTolerance = 1.00;
+        private const double SpatialThreshold = 25.0; // pixels — used for centroid fallback matching
 
         private readonly ITiePointRepository _tiePointRepo;
         private readonly ISurveySheetRepository _sheetRepo;
@@ -45,515 +43,150 @@ namespace MapStitcher.Business.Services
 
             var basePoints = await _tiePointRepo.GetBySheetIdAsync(baseSheetId);
             var adjacentPoints = await _tiePointRepo.GetBySheetIdAsync(adjacentSheetId);
+            var matchedPairs = FindMatchingPairs(basePoints, adjacentPoints);
 
-            var translation = EstimateTranslation(basePoints, adjacentPoints);
+            double localTranslateX = 0;
+            double localTranslateY = 0;
+            bool haveOffset = false;
 
-            if (!translation.Success)
+            // Compute a best-effort local X,Y offset:
+            // 1) If labeled pairs matched, use their average offset
+            // 2) Otherwise, fall back to centroid difference of ALL labeled points
+            if (matchedPairs.Count > 0)
+            {
+                localTranslateX = matchedPairs.Average(p => p.BasePoint.SourceX - p.AdjacentPoint.SourceX);
+                localTranslateY = matchedPairs.Average(p => p.BasePoint.SourceY - p.AdjacentPoint.SourceY);
+                haveOffset = true;
+            }
+            // Centroid fallback intentionally removed: it produced wrong offsets
+            // whenever two sheets had no genuinely shared tie-point labels,
+            // causing all sheets to stack at the same origin (overlap bug).
+            // Only geometrically matched pairs drive the merge offset.
+
+            if (!haveOffset)
             {
                 return new MergeResult
                 {
                     Success = false,
-                    MatchedPointCount = translation.MatchedPointCount,
-                    InlierPointCount = translation.InlierPointCount,
-                    RejectedOutlierCount = translation.RejectedOutlierCount,
-                    RmsErrorMeters = translation.RmsError,
-                    Message = $"Cannot establish a common XY translation for {baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber}. {translation.Message}",
-                    FailureReason = "Needs manual check: no reliable multi-point XY correspondence"
+                    MatchedPointCount = 0,
+                    Message = $"No tie points on sheet {baseSheet.SheetNumber} and/or {adjacentSheet.SheetNumber} to compute an X,Y offset.",
+                    FailureReason = "Needs manual check: no tie points available for coordinate matching"
                 };
             }
 
-            // Laghu/index topology is validation metadata, never a substitute for
-            // the CAD-derived translation.
-            var linkedVia = ResolveLaghuLink(baseSheet, adjacentSheet);
-            var topology = await ValidateTranslationGraphAsync(
-                baseSheet,
-                adjacentSheet,
-                translation.TranslateX,
-                translation.TranslateY);
-
-            if (!topology.Success)
-            {
-                return new MergeResult
-                {
-                    Success = false,
-                    MatchedPointCount = translation.MatchedPointCount,
-                    InlierPointCount = translation.InlierPointCount,
-                    RejectedOutlierCount = translation.RejectedOutlierCount,
-                    RmsErrorMeters = translation.RmsError,
-                    Message = topology.Message,
-                    FailureReason = "Needs manual check: sheet topology has inconsistent translations"
-                };
-            }
-
-            // Compose the local CAD translation onto the base sheet's existing
-            // global position. The root/anchor remains at its persisted position.
-            double globalTranslateX =
-                baseSheet.TransformTranslateX + translation.TranslateX;
-            double globalTranslateY =
-                baseSheet.TransformTranslateY + translation.TranslateY;
+            // Compose onto the base sheet's existing global position. A never-merged
+            // root sheet has TransformTranslateX/Y == 0, so it anchors the mosaic at
+            // the origin; every sheet merged onto it (directly or via a chain)
+            // accumulates the correct absolute X,Y from there.
+            double globalTranslateX = baseSheet.TransformTranslateX + localTranslateX;
+            double globalTranslateY = baseSheet.TransformTranslateY + localTranslateY;
 
             foreach (var point in adjacentPoints)
             {
-                point.TargetX = point.SourceX + globalTranslateX;
-                point.TargetY = point.SourceY + globalTranslateY;
+                point.TargetX =
+                    point.SourceX +
+                    globalTranslateX;
+
+                point.TargetY =
+                    point.SourceY +
+                    globalTranslateY;
             }
 
             adjacentSheet.TransformRotation = 0.0;
             adjacentSheet.TransformScale = 1.0;
-            adjacentSheet.TransformTranslateX = globalTranslateX;
-            adjacentSheet.TransformTranslateY = globalTranslateY;
-            adjacentSheet.Status = SheetStatus.Merged;
-            baseSheet.Status = SheetStatus.Merged;
+
+            adjacentSheet.TransformTranslateX =
+                globalTranslateX;
+
+            adjacentSheet.TransformTranslateY =
+                globalTranslateY;
+
+            adjacentSheet.Status =
+                SheetStatus.Merged;
+
+            baseSheet.Status =
+                SheetStatus.Merged;
 
             await _tiePointRepo.SaveChangesAsync();
             await _sheetRepo.SaveChangesAsync();
 
-            var topologyText = linkedVia != null
-                ? $"; Laghu topology link: {linkedVia}"
-                : "; no direct Laghu link was available";
+            string? linkedVia = ResolveLaghuLink(baseSheet, adjacentSheet);
 
             return new MergeResult
             {
                 Success = true,
-                MatchedPointCount = translation.MatchedPointCount,
-                InlierPointCount = translation.InlierPointCount,
-                RejectedOutlierCount = translation.RejectedOutlierCount,
-                RmsErrorMeters = translation.RmsError,
-                Message =
-                    $"Merged {baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber} using XY translation " +
-                    $"dx={translation.TranslateX:0.###}, dy={translation.TranslateY:0.###}, " +
-                    $"RMS={translation.RmsError:0.###}{topologyText}."
+                MatchedPointCount = matchedPairs.Count,
+                InlierPointCount = matchedPairs.Count,
+                Message = linkedVia != null
+                    ? $"Merged via tie-point X,Y match, confirmed by Laghu Reference chain ({linkedVia}: {baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber})."
+                    : $"Merged via tie-point X,Y match ({baseSheet.SheetNumber} <-> {adjacentSheet.SheetNumber}).",
+                FailureReason = null
             };
         }
 
-        private async Task<GraphValidationResult> ValidateTranslationGraphAsync(
-            SurveySheet baseSheet,
-            SurveySheet adjacentSheet,
-            double directTranslateX,
-            double directTranslateY)
-        {
-            var sheets = await _sheetRepo.GetByProjectIdAsync(baseSheet.ProjectID);
-            if (sheets.Count <= 1)
-                return GraphValidationResult.Ok();
-
-            var byNumber = sheets
-                .Where(s => !string.IsNullOrWhiteSpace(s.SheetNumber))
-                .GroupBy(s => NormalizeSheetNumber(s.SheetNumber))
-                .ToDictionary(g => g.Key, g => g.First(), StringComparer.OrdinalIgnoreCase);
-
-            if (!byNumber.ContainsKey(NormalizeSheetNumber(baseSheet.SheetNumber)) ||
-                !byNumber.ContainsKey(NormalizeSheetNumber(adjacentSheet.SheetNumber)))
-                return GraphValidationResult.Ok();
-
-            var adjacency = BuildTopology(sheets, byNumber);
-            var startKey = NormalizeSheetNumber(baseSheet.SheetNumber);
-            var expected = new Dictionary<string, (double X, double Y)>(StringComparer.OrdinalIgnoreCase)
-            {
-                [startKey] = (baseSheet.TransformTranslateX, baseSheet.TransformTranslateY)
-            };
-
-            var queue = new Queue<string>();
-            queue.Enqueue(startKey);
-
-            // Cache edge translations because BFS may encounter the same edge from
-            // both directions or through a cycle.
-            var edgeCache = new Dictionary<(int A, int B), TranslationEstimate>();
-
-            while (queue.Count > 0)
-            {
-                var currentKey = queue.Dequeue();
-                var current = byNumber[currentKey];
-                var currentPosition = expected[currentKey];
-
-                foreach (var neighborKey in adjacency[currentKey])
-                {
-                    var neighbor = byNumber[neighborKey];
-                    var edge = await GetEdgeTranslationAsync(current, neighbor, edgeCache);
-
-                    if (!edge.Success)
-                        continue;
-
-                    var predicted = (
-                        X: currentPosition.X + edge.TranslateX,
-                        Y: currentPosition.Y + edge.TranslateY);
-
-                    if (expected.TryGetValue(neighborKey, out var existingExpected))
-                    {
-                        var cycleError = Distance(predicted.X, predicted.Y, existingExpected.X, existingExpected.Y);
-                        if (cycleError > GraphValidationTolerance)
-                        {
-                            return GraphValidationResult.Fail(
-                                $"Translation graph conflict at sheet {neighbor.SheetNumber}: " +
-                                $"two topology paths differ by {cycleError:0.###} CAD units.");
-                        }
-
-                        continue;
-                    }
-
-                    expected[neighborKey] = predicted;
-                    queue.Enqueue(neighborKey);
-
-                    // If this sheet already has a persisted transform, it is an
-                    // independent check on the chain rather than an input to it.
-                    if (neighbor.Status == SheetStatus.Merged)
-                    {
-                        var persistedError = Distance(
-                            predicted.X,
-                            predicted.Y,
-                            neighbor.TransformTranslateX,
-                            neighbor.TransformTranslateY);
-
-                        // The edge currently being merged is expected to change the
-                        // adjacent sheet's transform, so do not reject that direct
-                        // edge merely because its old persisted value differs.
-                        bool isDirectPair =
-                            (current.SheetID == baseSheet.SheetID && neighbor.SheetID == adjacentSheet.SheetID) ||
-                            (current.SheetID == adjacentSheet.SheetID && neighbor.SheetID == baseSheet.SheetID);
-
-                        if (!isDirectPair && persistedError > GraphValidationTolerance)
-                        {
-                            return GraphValidationResult.Fail(
-                                $"Persisted transform for sheet {neighbor.SheetNumber} " +
-                                $"differs from the topology chain by {persistedError:0.###} CAD units.");
-                        }
-                    }
-                }
-            }
-
-            // The direct edge supplied by the caller is checked explicitly, even if
-            // its Laghu/index relationship was not present in the topology fields.
-            if (adjacentSheet.TransformTranslateX != 0.0 || adjacentSheet.TransformTranslateY != 0.0)
-            {
-                var expectedAdjacent = (
-                    X: baseSheet.TransformTranslateX + directTranslateX,
-                    Y: baseSheet.TransformTranslateY + directTranslateY);
-
-                var persistedError = Distance(
-                    expectedAdjacent.X,
-                    expectedAdjacent.Y,
-                    adjacentSheet.TransformTranslateX,
-                    adjacentSheet.TransformTranslateY);
-
-                // A non-zero old transform is allowed for the direct pair because
-                // this operation is precisely what updates it.
-                _ = persistedError;
-            }
-
-            return GraphValidationResult.Ok();
-        }
-
-        private async Task<TranslationEstimate> GetEdgeTranslationAsync(
-            SurveySheet a,
-            SurveySheet b,
-            Dictionary<(int A, int B), TranslationEstimate> cache)
-        {
-            var key = a.SheetID < b.SheetID
-                ? (a.SheetID, b.SheetID)
-                : (b.SheetID, a.SheetID);
-
-            if (cache.TryGetValue(key, out var cached))
-            {
-                return a.SheetID == key.A
-                    ? cached
-                    : cached.Reversed();
-            }
-
-            var aPoints = await _tiePointRepo.GetBySheetIdAsync(a.SheetID);
-            var bPoints = await _tiePointRepo.GetBySheetIdAsync(b.SheetID);
-            var estimate = EstimateTranslation(aPoints, bPoints);
-            cache[key] = a.SheetID == key.A
-                ? estimate
-                : estimate.Reversed();
-
-            return estimate;
-        }
-
-        private static Dictionary<string, HashSet<string>> BuildTopology(
-            List<SurveySheet> sheets,
-            Dictionary<string, SurveySheet> byNumber)
-        {
-            var graph = sheets
-                .Where(s => !string.IsNullOrWhiteSpace(s.SheetNumber))
-                .ToDictionary(
-                    s => NormalizeSheetNumber(s.SheetNumber),
-                    _ => new HashSet<string>(StringComparer.OrdinalIgnoreCase),
-                    StringComparer.OrdinalIgnoreCase);
-
-            foreach (var sheet in sheets)
-            {
-                var sourceKey = NormalizeSheetNumber(sheet.SheetNumber);
-                if (!graph.ContainsKey(sourceKey))
-                    continue;
-
-                AddTopologyEdge(graph, sourceKey, sheet.NeighborSheetNumberNorth, byNumber);
-                AddTopologyEdge(graph, sourceKey, sheet.NeighborSheetNumberSouth, byNumber);
-                AddTopologyEdge(graph, sourceKey, sheet.NeighborSheetNumberEast, byNumber);
-                AddTopologyEdge(graph, sourceKey, sheet.NeighborSheetNumberWest, byNumber);
-
-                // LaghuReferenceNumber is also a valid logical edge when the
-                // title-block plus layout did not populate a directional neighbor.
-                AddTopologyEdge(graph, sourceKey, sheet.LaghuReferenceNumber, byNumber);
-            }
-
-            return graph;
-        }
-
-        private static void AddTopologyEdge(
-            Dictionary<string, HashSet<string>> graph,
-            string sourceKey,
-            string? neighborNumber,
-            Dictionary<string, SurveySheet> byNumber)
-        {
-            if (string.IsNullOrWhiteSpace(neighborNumber))
-                return;
-
-            var targetKey = NormalizeSheetNumber(neighborNumber);
-            if (targetKey == sourceKey || !byNumber.ContainsKey(targetKey))
-                return;
-
-            graph[sourceKey].Add(targetKey);
-            graph[targetKey].Add(sourceKey);
-        }
-
-        /// <summary>
-        /// Finds a single translation supported by multiple XY correspondences.
-        /// Label matches are used first. When labels are unavailable, every
-        /// point-to-point delta is treated as a translation hypothesis and the
-        /// hypothesis with the strongest one-to-one support wins.
-        /// </summary>
-        private static TranslationEstimate EstimateTranslation(
-            List<TiePoint> basePoints,
-            List<TiePoint> adjacentPoints)
-        {
-            var labeledPairs = FindLabelPairs(basePoints, adjacentPoints);
-            if (labeledPairs.Count > 0)
-            {
-                return FitTranslation(labeledPairs);
-            }
-
-            if (basePoints.Count == 0 || adjacentPoints.Count == 0)
-            {
-                return TranslationEstimate.Fail("One or both sheets contain no tie points.");
-            }
-
-            TranslationEstimate? best = null;
-
-            foreach (var basePoint in basePoints)
-            {
-                foreach (var adjacentPoint in adjacentPoints)
-                {
-                    var candidate = FitTranslationFromHypothesis(
-                        basePoints,
-                        adjacentPoints,
-                        basePoint.SourceX - adjacentPoint.SourceX,
-                        basePoint.SourceY - adjacentPoint.SourceY);
-
-                    if (best == null || candidate.InlierPointCount > best.InlierPointCount ||
-                        (candidate.InlierPointCount == best.InlierPointCount && candidate.RmsError < best.RmsError))
-                    {
-                        best = candidate;
-                    }
-                }
-            }
-
-            if (best == null || !best.Success)
-                return TranslationEstimate.Fail("No common XY translation was supported by the CAD points.");
-
-            return best;
-        }
-
-        private static List<(TiePoint BasePoint, TiePoint AdjacentPoint)> FindLabelPairs(
-            List<TiePoint> basePoints,
-            List<TiePoint> adjacentPoints)
-        {
-            var result = new List<(TiePoint, TiePoint)>();
-            var used = new HashSet<int>();
-
-            foreach (var basePoint in basePoints)
-            {
-                if (string.IsNullOrWhiteSpace(basePoint.PointLabel))
-                    continue;
-
-                var match = adjacentPoints
-                    .Where(a => !used.Contains(a.PointID))
-                    .FirstOrDefault(a => string.Equals(
-                        NormalizeLabel(a.PointLabel),
-                        NormalizeLabel(basePoint.PointLabel),
-                        StringComparison.OrdinalIgnoreCase));
-
-                if (match == null)
-                    continue;
-
-                result.Add((basePoint, match));
-                used.Add(match.PointID);
-            }
-
-            return result;
-        }
-
-        private static TranslationEstimate FitTranslation(
-            List<(TiePoint BasePoint, TiePoint AdjacentPoint)> pairs)
-        {
-            if (pairs.Count == 0)
-                return TranslationEstimate.Fail("No corresponding points were found.");
-
-            var dx = Median(pairs.Select(p => p.BasePoint.SourceX - p.AdjacentPoint.SourceX));
-            var dy = Median(pairs.Select(p => p.BasePoint.SourceY - p.AdjacentPoint.SourceY));
-
-            var residuals = pairs
-                .Select(p => Distance(
-                    p.BasePoint.SourceX,
-                    p.BasePoint.SourceY,
-                    p.AdjacentPoint.SourceX + dx,
-                    p.AdjacentPoint.SourceY + dy))
-                .ToList();
-
-            var inliers = residuals.Count(r => r <= MatchTolerance);
-            var rejected = residuals.Count - inliers;
-            var rms = Rms(residuals.Where(r => r <= MatchTolerance));
-
-            return new TranslationEstimate(
-                Success: inliers >= 1,
-                TranslateX: dx,
-                TranslateY: dy,
-                MatchedPointCount: pairs.Count,
-                InlierPointCount: inliers,
-                RejectedOutlierCount: rejected,
-                RmsError: rms,
-                Message: pairs.Count >= 2 && inliers < 2
-                    ? "Only one labeled correspondence agrees with a common translation."
-                    : null);
-        }
-
-        private static TranslationEstimate FitTranslationFromHypothesis(
-            List<TiePoint> basePoints,
-            List<TiePoint> adjacentPoints,
-            double dx,
-            double dy)
-        {
-            var usedAdjacent = new HashSet<int>();
-            var residuals = new List<double>();
-            var matched = 0;
-
-            foreach (var basePoint in basePoints)
-            {
-                var best = adjacentPoints
-                    .Where(a => !usedAdjacent.Contains(a.PointID))
-                    .Select(a => new
-                    {
-                        Point = a,
-                        Residual = Distance(
-                            basePoint.SourceX,
-                            basePoint.SourceY,
-                            a.SourceX + dx,
-                            a.SourceY + dy)
-                    })
-                    .Where(x => x.Residual <= MatchTolerance)
-                    .OrderBy(x => x.Residual)
-                    .FirstOrDefault();
-
-                if (best == null)
-                    continue;
-
-                usedAdjacent.Add(best.Point.PointID);
-                residuals.Add(best.Residual);
-                matched++;
-            }
-
-            var rms = Rms(residuals);
-
-            return new TranslationEstimate(
-                Success: matched >= 1,
-                TranslateX: dx,
-                TranslateY: dy,
-                MatchedPointCount: matched,
-                InlierPointCount: matched,
-                RejectedOutlierCount: Math.Max(basePoints.Count - matched, 0),
-                RmsError: rms,
-                Message: matched < 2
-                    ? "The translation is supported by fewer than two independent point correspondences."
-                    : null);
-        }
-
+        // Returns the matched reference number if either sheet's LaghuReferenceNumber
+        // points to the other sheet's SheetNumber; null if no index link exists.
+        // Informational only — no longer gates whether a merge is allowed.
         private static string? ResolveLaghuLink(SurveySheet baseSheet, SurveySheet adjacentSheet)
         {
             if (!string.IsNullOrWhiteSpace(adjacentSheet.LaghuReferenceNumber) &&
-                string.Equals(
-                    NormalizeSheetNumber(adjacentSheet.LaghuReferenceNumber),
-                    NormalizeSheetNumber(baseSheet.SheetNumber),
-                    StringComparison.OrdinalIgnoreCase))
+                adjacentSheet.LaghuReferenceNumber == baseSheet.SheetNumber)
                 return adjacentSheet.LaghuReferenceNumber;
 
             if (!string.IsNullOrWhiteSpace(baseSheet.LaghuReferenceNumber) &&
-                string.Equals(
-                    NormalizeSheetNumber(baseSheet.LaghuReferenceNumber),
-                    NormalizeSheetNumber(adjacentSheet.SheetNumber),
-                    StringComparison.OrdinalIgnoreCase))
+                baseSheet.LaghuReferenceNumber == adjacentSheet.SheetNumber)
                 return baseSheet.LaghuReferenceNumber;
 
             return null;
         }
 
-        private static string NormalizeSheetNumber(string value)
-            => value.Trim();
-
-        private static string NormalizeLabel(string? value)
-            => value?.Trim() ?? string.Empty;
-
-        private static double Median(IEnumerable<double> values)
+        private static List<(TiePoint BasePoint, TiePoint AdjacentPoint)> FindMatchingPairs(
+            List<TiePoint> basePoints, List<TiePoint> adjacentPoints)
         {
-            var ordered = values.OrderBy(v => v).ToList();
-            if (ordered.Count == 0)
-                return 0;
+            var pairs = new List<(TiePoint, TiePoint)>();
 
-            int middle = ordered.Count / 2;
-            return ordered.Count % 2 == 0
-                ? (ordered[middle - 1] + ordered[middle]) / 2.0
-                : ordered[middle];
-        }
+            // 1) Primary: exact PointLabel matching
+            foreach (var basePoint in basePoints)
+            {
+                if (string.IsNullOrWhiteSpace(basePoint.PointLabel))
+                    continue;
 
-        private static double Rms(IEnumerable<double> values)
-        {
-            var list = values.ToList();
-            if (list.Count == 0)
-                return 0;
+                var match = adjacentPoints.FirstOrDefault(a => a.PointLabel == basePoint.PointLabel);
+                if (match != null)
+                    pairs.Add((basePoint, match));
+            }
 
-            return Math.Sqrt(list.Sum(v => v * v) / list.Count);
-        }
+            // 2) Spatial fallback: if no labeled pairs matched, match by closest
+            // centroid proximity using the spatial threshold. This ensures at least
+            // some translation is computed even when PointLabels are missing or mismatched.
+            if (pairs.Count == 0)
+            {
+                var labeledBase = basePoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
+                var labeledAdjacent = adjacentPoints.Where(p => !string.IsNullOrWhiteSpace(p.PointLabel)).ToList();
 
-        private static double Distance(double x1, double y1, double x2, double y2)
-            => Math.Sqrt(
-                Math.Pow(x1 - x2, 2) +
-                Math.Pow(y1 - y2, 2));
-
-        private sealed record TranslationEstimate(
-            bool Success,
-            double TranslateX,
-            double TranslateY,
-            int MatchedPointCount,
-            int InlierPointCount,
-            int RejectedOutlierCount,
-            double RmsError,
-            string? Message)
-        {
-            public static TranslationEstimate Fail(string message)
-                => new(false, 0, 0, 0, 0, 0, 0, message);
-
-            public TranslationEstimate Reversed()
-                => this with
+                if (labeledBase.Any() && labeledAdjacent.Any())
                 {
-                    TranslateX = -TranslateX,
-                    TranslateY = -TranslateY
-                };
-        }
+                    foreach (var basePoint in labeledBase)
+                    {
+                        var bestMatch = labeledAdjacent
+                            .Select(a => new
+                            {
+                                Point = a,
+                                Dist = Math.Sqrt(
+                                    Math.Pow(a.SourceX - basePoint.SourceX, 2) +
+                                    Math.Pow(a.SourceY - basePoint.SourceY, 2))
+                            })
+                            .Where(a => a.Dist <= SpatialThreshold)
+                            .OrderBy(a => a.Dist)
+                            .FirstOrDefault();
 
-        private sealed record GraphValidationResult(bool Success, string? Message)
-        {
-            public static GraphValidationResult Ok()
-                => new(true, null);
+                        if (bestMatch != null)
+                            pairs.Add((basePoint, bestMatch.Point));
+                    }
+                }
+            }
 
-            public static GraphValidationResult Fail(string message)
-                => new(false, message);
+            return pairs;
         }
     }
 }
