@@ -1,0 +1,346 @@
+﻿@model MapStitcher.Model.CadCoordinateInspectionResult
+
+@{
+    ViewData["Title"] = "CAD Coordinate Inspection";
+}
+
+<div class="container-fluid mt-4">
+
+    <h2>
+        CAD Coordinate Inspection
+    </h2>
+
+    <div class="mb-3">
+
+        <strong>
+            Sheet:
+        </strong>
+
+        @Model.SheetNumber
+
+    </div>
+
+
+    <!-- ================================================
+         LAGHU REFERENCES
+         ================================================ -->
+
+    <div class="card mb-4">
+
+        <div class="card-header">
+
+            <strong>
+                Laghu References
+            </strong>
+
+        </div>
+
+        <div class="card-body">
+
+            @if (
+                        Model.LaghuReferences != null &&
+                        Model.LaghuReferences.Any())
+            {
+                <div class="table-responsive">
+
+                    <table class="table table-bordered">
+
+                        <thead class="table-dark">
+
+                            <tr>
+
+                                <th>
+                                    #
+                                </th>
+
+                                <th>
+                                    Reference
+                                </th>
+
+                                <th>
+                                    X
+                                </th>
+
+                                <th>
+                                    Y
+                                </th>
+
+                                <th>
+                                    Layer
+                                </th>
+
+                                <th>
+                                    Text
+                                </th>
+
+                            </tr>
+
+                        </thead>
+
+                        <tbody>
+
+                            @for (
+                                                    int i = 0;
+                                                    i < Model.LaghuReferences.Count;
+                                                    i++)
+                            {
+                                var reference =
+                                Model.LaghuReferences[i];
+
+                                <tr>
+
+                                    <td>
+                                        @(i + 1)
+                                    </td>
+
+                                    <td>
+
+                                        <strong>
+                                            @reference.ReferenceNumber
+                                        </strong>
+
+                                    </td>
+
+                                    <td>
+                                        @reference.X.ToString("F3")
+                                    </td>
+
+                                    <td>
+                                        @reference.Y.ToString("F3")
+                                    </td>
+
+                                    <td>
+                                        @reference.LayerName
+                                    </td>
+
+                                    <td>
+                                        @reference.Text
+                                    </td>
+
+                                </tr>
+                            }
+
+                        </tbody>
+
+                    </table>
+
+                </div>
+            }
+            else
+            {
+                <div class="alert alert-warning">
+
+                    No Laghu references found.
+
+                </div>
+            }
+
+        </div>
+
+    </div>
+
+
+    <!-- ================================================
+         CAD EXTENT
+         ================================================ -->
+
+    <div class="card mb-4">
+
+        <div class="card-header">
+
+            <strong>
+                CAD Extent
+            </strong>
+
+        </div>
+
+        <div class="card-body">
+
+            <div class="row">
+
+                <div class="col-md-3">
+
+                    <strong>
+                        Min X
+                    </strong>
+
+                    <div>
+                        @Model.MinX.ToString("F3")
+                    </div>
+
+                </div>
+
+                <div class="col-md-3">
+
+                    <strong>
+                        Min Y
+                    </strong>
+
+                    <div>
+                        @Model.MinY.ToString("F3")
+                    </div>
+
+                </div>
+
+                <div class="col-md-3">
+
+                    <strong>
+                        Max X
+                    </strong>
+
+                    <div>
+                        @Model.MaxX.ToString("F3")
+                    </div>
+
+                </div>
+
+                <div class="col-md-3">
+
+                    <strong>
+                        Max Y
+                    </strong>
+
+                    <div>
+                        @Model.MaxY.ToString("F3")
+                    </div>
+
+                </div>
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <!-- ================================================
+         CAD COORDINATES
+         ================================================ -->
+
+    <div class="card">
+
+        <div class="card-header">
+
+            <strong>
+                CAD Coordinates
+            </strong>
+
+            <span class="float-end">
+
+                Total:
+                @Model.EntityCount
+
+            </span>
+
+        </div>
+
+        <div class="card-body p-0">
+
+            <div class="table-responsive"
+                 style="max-height:700px;overflow-y:auto;">
+
+                <table class="table table-sm
+                           table-striped
+                           table-hover
+                           mb-0">
+
+                    <thead class="table-dark sticky-top">
+
+                        <tr>
+
+                            <th>
+                                #
+                            </th>
+
+                            <th>
+                                Entity
+                            </th>
+
+                            <th>
+                                Shape
+                            </th>
+
+                            <th>
+                                Layer
+                            </th>
+
+                            <th>
+                                Text
+                            </th>
+
+                            <th>
+                                X
+                            </th>
+
+                            <th>
+                                Y
+                            </th>
+
+                            <th>
+                                Insertion Point
+                            </th>
+
+                        </tr>
+
+                    </thead>
+
+                    <tbody>
+
+                        @for (
+                                                int i = 0;
+                                                i < Model.Coordinates.Count;
+                                                i++)
+                        {
+                            var point =
+                            Model.Coordinates[i];
+
+                            <tr>
+
+                                <td>
+                                    @(i + 1)
+                                </td>
+
+                                <td>
+                                    @point.EntityType
+                                </td>
+
+                                <td>
+                                    @point.Shape
+                                </td>
+
+                                <td>
+                                    @point.LayerName
+                                </td>
+
+                                <td>
+                                    @point.Text
+                                </td>
+
+                                <td>
+                                    @point.X.ToString("F3")
+                                </td>
+
+                                <td>
+                                    @point.Y.ToString("F3")
+                                </td>
+
+                                <td>
+                                    @(point.HasInsertionPoint
+                                                                    ? "YES"
+                                                                    : "NO")
+                            </td>
+
+                            </tr>
+                                                }
+
+                    </tbody>
+
+                </table>
+
+            </div>
+
+        </div>
+
+    </div>
+
+</div>

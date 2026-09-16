@@ -1,0 +1,411 @@
+﻿@model MapStitcher.Model.CadCoordinateInspectionResult
+
+<!DOCTYPE html>
+<html>
+<head>
+
+    <meta charset="utf-8" />
+
+    <title>
+        CAD Sheet Inspection Result
+    </title>
+
+    <style>
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            margin: 0;
+            padding: 30px;
+        }
+
+        .container {
+            max-width: 1400px;
+            margin: auto;
+        }
+
+        .card {
+            background: white;
+            border-radius: 8px;
+            padding: 25px;
+            margin-bottom: 25px;
+            box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        h2 {
+            margin-top: 0;
+        }
+
+        table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        th,
+        td {
+            padding: 10px;
+            border: 1px solid #ddd;
+            text-align: left;
+        }
+
+        th {
+            background: #f0f2f4;
+        }
+
+        .number {
+            text-align: right;
+        }
+
+        .empty {
+            padding: 20px;
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+        }
+
+        .back {
+            display: inline-block;
+            margin-bottom: 20px;
+            text-decoration: none;
+            background: #6c757d;
+            color: white;
+            padding: 10px 18px;
+            border-radius: 5px;
+        }
+
+        .summary {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 15px;
+        }
+
+        .summary-box {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 6px;
+        }
+
+        .summary-label {
+            font-size: 13px;
+            color: #666;
+        }
+
+        .summary-value {
+            font-size: 20px;
+            font-weight: bold;
+            margin-top: 5px;
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+    <div class="container">
+
+        <a class="back"
+           href="/CadInspection/NewSheet">
+            Upload Another Sheet
+        </a>
+
+        <div class="card">
+
+            <h1>CAD Sheet Inspection Result</h1>
+
+            <div class="summary">
+
+                <div class="summary-box">
+                    <div class="summary-label">
+                        Sheet
+                    </div>
+
+                    <div class="summary-value">
+                        @Model.SheetNumber
+                    </div>
+                </div>
+
+                <div class="summary-box">
+                    <div class="summary-label">
+                        Entity Coordinates
+                    </div>
+
+                    <div class="summary-value">
+                        @Model.Coordinates.Count
+                    </div>
+                </div>
+
+                <div class="summary-box">
+                    <div class="summary-label">
+                        Laghu References
+                    </div>
+
+                    <div class="summary-value">
+                        @Model.LaghuReferences.Count
+                    </div>
+                </div>
+
+                <div class="summary-box">
+                    <div class="summary-label">
+                        Entity Count
+                    </div>
+
+                    <div class="summary-value">
+                        @Model.EntityCount
+                    </div>
+                </div>
+
+            </div>
+
+        </div>
+
+
+        <div class="card">
+
+            <h2>CAD Extent</h2>
+
+            <table>
+
+                <tr>
+                    <th>Min X</th>
+                    <td class="number">
+                        @Model.MinX.ToString("F3")
+                    </td>
+
+                    <th>Min Y</th>
+                    <td class="number">
+                        @Model.MinY.ToString("F3")
+                    </td>
+                </tr>
+
+                <tr>
+                    <th>Max X</th>
+                    <td class="number">
+                        @Model.MaxX.ToString("F3")
+                    </td>
+
+                    <th>Max Y</th>
+                    <td class="number">
+                        @Model.MaxY.ToString("F3")
+                    </td>
+                </tr>
+
+                <tr>
+                    <th>Width</th>
+                    <td class="number">
+                        @((Model.MaxX - Model.MinX).ToString("F3"))
+                    </td>
+
+                    <th>Height</th>
+                    <td class="number">
+                        @((Model.MaxY - Model.MinY).ToString("F3"))
+                    </td>
+                </tr>
+
+            </table>
+
+        </div>
+
+
+        <div class="card">
+
+            <h2>Laghu References</h2>
+
+            @if (Model.LaghuReferences.Count == 0)
+            {
+                <div class="empty">
+                    No Laghu references were detected.
+                </div>
+            }
+            else
+            {
+                <table>
+
+                    <thead>
+
+                        <tr>
+                            <th>
+                                Reference
+                            </th>
+
+                            <th>
+                                Connected Sheet
+                            </th>
+
+                            <th>
+                                X
+                            </th>
+
+                            <th>
+                                Y
+                            </th>
+
+                            <th>
+                                Layer
+                            </th>
+
+                            <th>
+                                Text
+                            </th>
+                        </tr>
+
+                    </thead>
+
+                    <tbody>
+
+                        @foreach (
+                                            var reference
+                                            in Model.LaghuReferences)
+                        {
+                            <tr>
+
+                                <td>
+                                    @reference.ReferenceNumber
+                                </td>
+
+                                <td>
+                                    @reference.ReferenceNumber
+                                </td>
+
+                                <td class="number">
+                                    @reference.X.ToString("F3")
+                                </td>
+
+                                <td class="number">
+                                    @reference.Y.ToString("F3")
+                                </td>
+
+                                <td>
+                                    @reference.LayerName
+                                </td>
+
+                                <td>
+                                    @reference.Text
+                                </td>
+
+                            </tr>
+                        }
+
+                    </tbody>
+
+                </table>
+            }
+
+        </div>
+
+
+        <div class="card">
+
+            <h2>All CAD Coordinates</h2>
+
+            @if (Model.Coordinates.Count == 0)
+            {
+                <div class="empty">
+                    No CAD coordinates were extracted.
+                </div>
+            }
+            else
+            {
+                <table>
+
+                    <thead>
+
+                        <tr>
+                            <th>
+                                #
+                            </th>
+
+                            <th>
+                                Entity
+                            </th>
+
+                            <th>
+                                Shape
+                            </th>
+
+                            <th>
+                                Layer
+                            </th>
+
+                            <th>
+                                X
+                            </th>
+
+                            <th>
+                                Y
+                            </th>
+
+                            <th>
+                                Text
+                            </th>
+
+                            <th>
+                                Laghu Reference
+                            </th>
+                        </tr>
+
+                    </thead>
+
+                    <tbody>
+
+                        @{
+                            var index = 1;
+                        }
+
+                        @foreach (
+                                            var coordinate
+                                            in Model.Coordinates)
+                        {
+                            <tr>
+
+                                <td>
+                                    @index
+                                </td>
+
+                                <td>
+                                    @coordinate.EntityType
+                                </td>
+
+                                <td>
+                                    @coordinate.Shape
+                                </td>
+
+                                <td>
+                                    @coordinate.LayerName
+                                </td>
+
+                                <td class="number">
+                                    @coordinate.X.ToString("F3")
+                                </td>
+
+                                <td class="number">
+                                    @coordinate.Y.ToString("F3")
+                                </td>
+
+                                <td>
+                                    @coordinate.Text
+                                </td>
+
+                                <td>
+                                    @coordinate.LaghuReferenceNumber
+                                </td>
+
+                            </tr>
+
+                            index++;
+                        }
+
+                    </tbody>
+
+                </table>
+            }
+
+        </div>
+
+    </div>
+
+</body>
+</html>

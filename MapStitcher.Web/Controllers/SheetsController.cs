@@ -21,23 +21,24 @@ namespace MapStitcher.Web.Controllers
         private readonly IJigsawStitchService _jigsawService;
         private readonly ISheetGridArrangementService _gridArrangementService;
         private readonly IWebHostEnvironment _env;
-
+        private readonly ISheetBoundaryRepository _boundaryRepo;
         private static readonly string[] AllowedExtensions = { ".dwg", ".dxf" };
         private const long MaxFileSize = 50 * 1024 * 1024;
 
         public SheetsController(
-            ISurveySheetRepository sheetRepo,
-            IProjectRepository projectRepo,
-            ITiePointRepository tiePointRepo,
-            ICadastralParsingService parsingService,
-            ICadastralMergeService mergeService,
-            ISheetPlacementService placementService,
-            IStitchOrchestrationService stitchService,
-            ICadastralExportService exportService,
-            ISvgMosaicExportService svgExportService,
-            IJigsawStitchService jigsawService,
-            ISheetGridArrangementService gridArrangementService,
-            IWebHostEnvironment env)
+    ISurveySheetRepository sheetRepo,
+    IProjectRepository projectRepo,
+    ITiePointRepository tiePointRepo,
+    ISheetBoundaryRepository boundaryRepo,
+    ICadastralParsingService parsingService,
+    ICadastralMergeService mergeService,
+    ISheetPlacementService placementService,
+    IStitchOrchestrationService stitchService,
+    ICadastralExportService exportService,
+    ISvgMosaicExportService svgExportService,
+    IJigsawStitchService jigsawService,
+    ISheetGridArrangementService gridArrangementService,
+    IWebHostEnvironment env)
         {
             _sheetRepo = sheetRepo;
             _projectRepo = projectRepo;
@@ -51,6 +52,7 @@ namespace MapStitcher.Web.Controllers
             _jigsawService = jigsawService;
             _gridArrangementService = gridArrangementService;
             _env = env;
+            _boundaryRepo = boundaryRepo;
         }
 
         // Isolated download action. Requires the project's sheets to already
@@ -678,7 +680,29 @@ namespace MapStitcher.Web.Controllers
 
             return attempts;
         }
+        //Temp 
+        [HttpGet]
+        public async Task<IActionResult> TestSheetDetail(int? sheetId)
+        {
+            if (!sheetId.HasValue)
+                return View("TestSheetDetail", null as object);
 
+            var sheet = await _sheetRepo.GetByIdAsync(sheetId.Value);
+            if (sheet == null)
+            {
+                ViewBag.Error = $"Sheet ID {sheetId} not found.";
+                return View("TestSheetDetail", null as object);
+            }
+
+            var tiePoints = await _tiePointRepo.GetBySheetIdAsync(sheetId.Value);
+            var boundaries = await _boundaryRepo.GetBySheetIdAsync(sheetId.Value);
+
+            ViewBag.Sheet = sheet;
+            ViewBag.TiePoints = tiePoints;
+            ViewBag.Boundaries = boundaries;
+
+            return View("TestSheetDetail");
+        }
         private static string FormatMergeMessage(MergeAttemptResult m) => m.Success
             ? $"Auto-merged with Sheet {m.NeighborSheetNumber} (RMS: {m.RmsErrorMeters:F3})."
             : $"Auto-merge with Sheet {m.NeighborSheetNumber} skipped: {m.Message}";
@@ -686,4 +710,5 @@ namespace MapStitcher.Web.Controllers
         private sealed record MergeAttemptResult(
             int NeighborSheetId, string NeighborSheetNumber, bool Success, double RmsErrorMeters, string Message);
     }
+
 }

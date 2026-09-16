@@ -1,0 +1,155 @@
+﻿<!DOCTYPE html>
+<html>
+<head>
+
+    <meta charset="utf-8" />
+
+    <title>CAD Sheet Grid</title>
+
+    <style>
+
+        body {
+            font-family: Arial, sans-serif;
+            background: #f4f6f8;
+            margin: 0;
+            padding: 40px;
+        }
+
+        .container {
+            max-width: 900px;
+            margin: auto;
+        }
+
+        .card {
+            background: white;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0,0,0,.08);
+        }
+
+        h1 {
+            margin-top: 0;
+        }
+
+        .info {
+            background: #e8f4fd;
+            border-left: 4px solid #2196f3;
+            padding: 15px;
+            margin-bottom: 20px;
+        }
+
+        .error {
+            background: #fdeaea;
+            border-left: 4px solid #dc3545;
+            padding: 15px;
+            color: #842029;
+            margin-bottom: 20px;
+        }
+
+        input[type=file] {
+            width: 100%;
+            padding: 12px;
+            box-sizing: border-box;
+            margin: 20px 0;
+        }
+
+        button {
+            background: #0d6efd;
+            color: white;
+            border: 0;
+            padding: 12px 25px;
+            border-radius: 5px;
+            cursor: pointer;
+        }
+
+    </style>
+
+</head>
+
+<body>
+
+    <div class="container">
+
+        <div class="card">
+
+            <h1>
+                CAD Sheet Grid
+            </h1>
+
+            <div class="info">
+
+                <strong>
+                    Dynamic CAD Grid
+                </strong>
+
+                <p>
+                    Select any number of DWG/DXF files.
+                </p>
+
+                <ul>
+                    <li>
+                        Sheet index is extracted dynamically.
+                    </li>
+
+                    <li>
+                        CAD X/Y coordinates are extracted.
+                    </li>
+
+                    <li>
+                        Laghu references are extracted.
+                    </li>
+
+                    <li>
+                        Grid rows and columns are calculated automatically.
+                    </li>
+
+                    <li>
+                        No hard-coded 10-sheet limit.
+                    </li>
+
+                    <li>
+                        No stitching is performed yet.
+                    </li>
+                </ul>
+
+            </div>
+
+            @if (ViewBag.Error != null)
+            {
+                <div class="error">
+
+                    @ViewBag.Error
+
+                </div>
+            }
+
+            <form method="post"
+                  action="/CadGrid/Index"
+                  enctype="multipart/form-data">
+
+                @Html.AntiForgeryToken()
+
+                <label>
+                    <strong>
+                        Select DWG / DXF files
+                    </strong>
+                </label>
+
+                <input type="file"
+                       name="files"
+                       accept=".dwg,.dxf"
+                       multiple
+                       required />
+
+                <button type="submit">
+                    Build Grid
+                </button>
+
+            </form>
+
+        </div>
+
+    </div>
+
+</body>
+</html>

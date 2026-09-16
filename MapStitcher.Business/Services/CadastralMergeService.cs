@@ -58,13 +58,10 @@ namespace MapStitcher.Business.Services
                 localTranslateY = matchedPairs.Average(p => p.BasePoint.SourceY - p.AdjacentPoint.SourceY);
                 haveOffset = true;
             }
-            else if (basePoints.Count > 0 && adjacentPoints.Count > 0)
-            {
-                // Centroid fallback: translate so that the two sheets' point clouds align
-                localTranslateX = basePoints.Average(p => p.SourceX) - adjacentPoints.Average(p => p.SourceX);
-                localTranslateY = basePoints.Average(p => p.SourceY) - adjacentPoints.Average(p => p.SourceY);
-                haveOffset = true;
-            }
+            // Centroid fallback intentionally removed: it produced wrong offsets
+            // whenever two sheets had no genuinely shared tie-point labels,
+            // causing all sheets to stack at the same origin (overlap bug).
+            // Only geometrically matched pairs drive the merge offset.
 
             if (!haveOffset)
             {
@@ -169,22 +166,22 @@ namespace MapStitcher.Business.Services
 
                 if (labeledBase.Any() && labeledAdjacent.Any())
                 {
-                    // Try matching each base point to its closest adjacent point within threshold
                     foreach (var basePoint in labeledBase)
                     {
                         var bestMatch = labeledAdjacent
-                            .OrderBy(a => Math.Sqrt(
-                                Math.Pow(a.SourceX - basePoint.SourceX, 2) +
-                                Math.Pow(a.SourceY - basePoint.SourceY, 2)))
+                            .Select(a => new
+                            {
+                                Point = a,
+                                Dist = Math.Sqrt(
+                                    Math.Pow(a.SourceX - basePoint.SourceX, 2) +
+                                    Math.Pow(a.SourceY - basePoint.SourceY, 2))
+                            })
+                            .Where(a => a.Dist <= SpatialThreshold)
+                            .OrderBy(a => a.Dist)
                             .FirstOrDefault();
 
-                        if (bestMatch != null &&
-                            Math.Sqrt(
-                                Math.Pow(bestMatch.SourceX - basePoint.SourceX, 2) +
-                                Math.Pow(bestMatch.SourceY - basePoint.SourceY, 2)) <= SpatialThreshold)
-                        {
-                            pairs.Add((basePoint, bestMatch));
-                        }
+                        if (bestMatch != null)
+                            pairs.Add((basePoint, bestMatch.Point));
                     }
                 }
             }

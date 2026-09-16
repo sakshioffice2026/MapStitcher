@@ -52,7 +52,10 @@ namespace MapStitcher.Business.Services
         private static readonly HashSet<string> SheetBoundaryLayers = new(StringComparer.OrdinalIgnoreCase)
         {
             "Poly_Survey_Bndry",
-            "Poly_Village_Bndry"
+            "Poly_Village_Bndry",
+            "Poly_Off",
+            "Poly_Survey_Bndry_Cancel",
+            "Poly_Builtup"
         };
 
         // How far (in drawing units) a candidate neighbor number may sit from
@@ -73,6 +76,15 @@ namespace MapStitcher.Business.Services
         // (e.g. "1", "23"), unlike the surrounding title text.
         private static readonly Regex BareNumberPattern =
             new Regex(@"^\d{1,6}$", RegexOptions.Compiled);
+
+        // Matches "शीट क्र .1)" / "शीट क्र. 1" / "शीट क्रं (12)" allowing arbitrary
+        // whitespace/punctuation between the words, same tolerant style as
+        // AdjacentSheetPattern. This is the sheet's real, DWG-authored number —
+        // used to overwrite the filename-derived placeholder SheetNumber
+        // assigned at upload time, and required for ResolveIndexBoxNeighbors'
+        // self-cell match against the title-block index box.
+        private static readonly Regex SheetTitleNumberPattern =
+            new Regex(@"शीट.*?क्र.*?(\d+)", RegexOptions.Compiled);
 
         private static readonly GeometryFactory _geomFactory = new GeometryFactory(new PrecisionModel(), 0);
 
@@ -125,6 +137,11 @@ namespace MapStitcher.Business.Services
             // main loop, once we have every candidate's position.
             var titleBlockNumbers = new List<(string Value, double X, double Y)>();
 
+            // The sheet's real number as printed in the title caption
+            // ("शीट क्र .1)"), captured once found. Overwrites the
+            // filename-derived placeholder SheetNumber after the loop.
+            string? titleSheetNumber = null;
+
             // Boundary geometry actually drawn on the sheet's own boundary
             // layers (as opposed to plot outlines, legend boxes, or the
             // print-frame rectangle) — used for the rectangle "Shape" check.
@@ -138,7 +155,10 @@ namespace MapStitcher.Business.Services
                 {
                     case TextEntity text:
                         if (string.Equals(layerName, TitleBlockLayerName, StringComparison.OrdinalIgnoreCase))
+                        {
                             CollectTitleBlockNumber(text.Value, text.InsertPoint.X, text.InsertPoint.Y, titleBlockNumbers);
+                            titleSheetNumber ??= TryExtractSheetTitleNumber(text.Value);
+                        }
 
                         ExtractTextCandidate(
                             text.Value,
@@ -151,7 +171,10 @@ namespace MapStitcher.Business.Services
 
                     case MText mtext:
                         if (string.Equals(layerName, TitleBlockLayerName, StringComparison.OrdinalIgnoreCase))
+                        {
                             CollectTitleBlockNumber(mtext.Value, mtext.InsertPoint.X, mtext.InsertPoint.Y, titleBlockNumbers);
+                            titleSheetNumber ??= TryExtractSheetTitleNumber(mtext.Value);
+                        }
 
                         ExtractTextCandidate(
                             mtext.Value,
@@ -194,6 +217,13 @@ namespace MapStitcher.Business.Services
                         break;
                 }
             }
+
+            // Real DWG sheet number takes over from the filename-derived
+            // placeholder assigned at upload time. Must happen before
+            // ResolveIndexBoxNeighbors, which matches its "self" cell
+            // against sheet.SheetNumber.
+            if (!string.IsNullOrWhiteSpace(titleSheetNumber))
+                sheet.SheetNumber = titleSheetNumber;
 
             ResolveIndexBoxNeighbors(titleBlockNumbers, sheet);
             sheet.BoundaryIsRectangle = DetermineIsRectangle(sheetBoundaryRings);
@@ -424,6 +454,20 @@ namespace MapStitcher.Business.Services
             // and tie-point labels, without which merge and grid placement fail.
             if (rawText.Any(char.IsDigit) && rawText.Length >= 2 && rawText.Length <= 30)
                 candidates.Add((rawText.Trim(), x, y));
+        }
+
+        // Extracts the sheet's real number from title-caption text like
+        // "शीट क्र .1)"; returns null for any other text on the layer
+        // (including the plus-shaped index-box's own bare-number cells,
+        // which CollectTitleBlockNumber handles separately).
+        private static string? TryExtractSheetTitleNumber(string? rawText)
+        {
+            if (string.IsNullOrWhiteSpace(rawText))
+                return null;
+
+            var decoded = DxfUnicodeEscapeDecoder.Decode(rawText);
+            var match = SheetTitleNumberPattern.Match(decoded);
+            return match.Success ? match.Groups[1].Value : null;
         }
 
         // Records a title-block text as a neighbor-number candidate if, once

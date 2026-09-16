@@ -151,8 +151,14 @@ namespace MapStitcher.Business.Services
             var ext = Path.GetExtension(fullPath).ToLowerInvariant();
             var sourceDocument = ext == ".dxf" ? DxfReader.Read(fullPath) : DwgReader.Read(fullPath);
 
+            // Use the persisted merge transform (TransformTranslateX/Y), which is
+            // set by CadastralMergeService after stitching. OffsetX/OffsetY are only
+            // the jigsaw-grid preview offsets and are NOT the real alignment values.
+            double tx = sheet.TransformTranslateX;
+            double ty = sheet.TransformTranslateY;
+
             var translation = CSMath.Transform.CreateTranslation(
-                new CSMath.XYZ(sheet.OffsetX, sheet.OffsetY, 0));
+                new CSMath.XYZ(tx, ty, 0));
 
             int count = 0;
             foreach (var sourceEntity in sourceDocument.Entities.ToList())

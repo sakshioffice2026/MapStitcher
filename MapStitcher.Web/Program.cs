@@ -43,6 +43,12 @@ builder.Services.AddScoped<ICadastralParsingService>(sp =>
     return new CadastralParsingService(sheetRepo, tiePointRepo, boundaryRepo, env.WebRootPath);
 });
 
+builder.Services.AddScoped<
+    ICadCoordinateInspectionService,
+    CadCoordinateInspectionService>();
+
+
+builder.Services.AddScoped<ICadSheetGridService,CadSheetGridService>();
 builder.Services.AddScoped<IJigsawIndexExtractionService>(sp =>
 {
     var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();

@@ -38,17 +38,20 @@ namespace MapStitcher.Business.Services
                 sheets);
 
             await MergeAllPlacedNeighborsAsync(
+                projectId,
                 sheets,
                 result);
 
+            var finalSheets = await _sheetRepo.GetByProjectIdAsync(projectId);
+
             result.PlacedCount =
-                sheets.Count(
+                finalSheets.Count(
                     s =>
                         s.GridRow.HasValue &&
                         s.GridCol.HasValue);
 
             result.MergedCount =
-                sheets.Count(
+                finalSheets.Count(
                     s =>
                         s.Status ==
                         SheetStatus.Merged);
@@ -96,30 +99,30 @@ namespace MapStitcher.Business.Services
         }
 
         private async Task MergeAllPlacedNeighborsAsync(
+            int projectId,
             List<SurveySheet> sheets,
             StitchResult result)
         {
-            var placedSheets =
-                sheets
-                    .Where(
-                        s =>
-                            s.GridRow.HasValue &&
-                            s.GridCol.HasValue)
-                    .ToList();
-
             var processed =
                 new HashSet<string>();
 
-            var maxPasses =
-                Math.Max(
-                    placedSheets.Count * 2,
-                    1);
+            var placedSheets = new List<SurveySheet>();
 
-            for (var pass = 0;
-                 pass < maxPasses;
-                 pass++)
+            var maxPasses =
+                Math.Max(sheets.Count * 2, 1);
+
+            for (var pass = 0; pass < maxPasses; pass++)
             {
                 var progress = false;
+
+                // Reload from DB every pass so TransformTranslateX/Y values
+                // updated by a previous merge are visible to the next sheet
+                // in the chain — without this, all offsets compose onto 0
+                // and every sheet lands at the origin (overlap).
+                placedSheets =
+                    (await _sheetRepo.GetByProjectIdAsync(projectId))
+                    .Where(s => s.GridRow.HasValue && s.GridCol.HasValue)
+                    .ToList();
 
                 foreach (var sheet in placedSheets)
                 {
@@ -141,11 +144,6 @@ namespace MapStitcher.Business.Services
 
                     processed.Add(pairKey);
 
-                    /*
-                     * The merge service composes the base sheet's global
-                     * translation with the adjacent sheet's local
-                     * translation.
-                     */
                     var mergeResult =
                         await _mergeService
                             .MergeSheetsAsync(
@@ -155,23 +153,14 @@ namespace MapStitcher.Business.Services
                     var outcome =
                         new SheetStitchOutcome
                         {
-                            SheetID =
-                                sheet.SheetID,
-
-                            SheetNumber =
-                                sheet.SheetNumber,
-
+                            SheetID = sheet.SheetID,
+                            SheetNumber = sheet.SheetNumber,
                             Placed = true,
-
-                            Merged =
-                                mergeResult.Success,
-
-                            FailureReason =
-                                mergeResult.FailureReason
+                            Merged = mergeResult.Success,
+                            FailureReason = mergeResult.FailureReason
                         };
 
-                    result.Outcomes.Add(
-                        outcome);
+                    result.Outcomes.Add(outcome);
 
                     if (mergeResult.Success)
                         progress = true;

@@ -70,12 +70,6 @@
                 ⚡ Stitch Available Sheets
             </button>
 
-            <button type="button"
-                    class="btn btn-sm btn-warning"
-                    onclick="mergeSheets()">
-                🧩 Merge Sheets
-            </button>
-
             <a href="@Url.Action("Upload", "Sheets", new { projectId = Model.ProjectID })"
                class="btn btn-sm btn-outline-info">
                 + Upload Sheet
@@ -159,6 +153,12 @@
 
             <div class="sidebar-sheet-list">
 
+                @{
+                    var existingSheetNumbers = new HashSet<string>(
+                        Model.Sheets.Select(s => s.SheetNumber),
+                        StringComparer.OrdinalIgnoreCase);
+                }
+
                 @foreach (var sheet in Model.Sheets.OrderBy(s => s.SheetNumber))
                 {
                     bool isPlaced =
@@ -169,6 +169,20 @@
                     statusColor.GetValueOrDefault(
                     sheet.Status.ToString(),
                     "#94a3b8");
+
+                    var missingNeighbors = new List<string>();
+                    void CheckNeighbor(string direction, string? neighborNumber)
+                    {
+                        if (!string.IsNullOrWhiteSpace(neighborNumber) &&
+                            !existingSheetNumbers.Contains(neighborNumber))
+                        {
+                            missingNeighbors.Add($"{direction}:{neighborNumber}");
+                        }
+                    }
+                    CheckNeighbor("N", sheet.NeighborSheetNumberNorth);
+                    CheckNeighbor("S", sheet.NeighborSheetNumberSouth);
+                    CheckNeighbor("E", sheet.NeighborSheetNumberEast);
+                    CheckNeighbor("W", sheet.NeighborSheetNumberWest);
 
                     <div class="sidebar-sheet @(isPlaced ? "placed" : "unplaced")"
                          onclick="selectSheet(@sheet.SheetID)"
@@ -188,7 +202,11 @@
                         </button>
 
                         <div class="sheet-num">
-                            Sheet @sheet.SheetNumber
+                            <a href="@Url.Action("SheetDetail", "Sheets", new { sheetId = sheet.SheetID })"
+                               style="color:#e2e8f0; text-decoration:none;"
+                               onclick="event.stopPropagation()">
+                                Sheet @sheet.SheetNumber
+                            </a>
                         </div>
 
                         <div class="sheet-status"
@@ -210,6 +228,15 @@
                             }
 
                         </div>
+
+                        @if (missingNeighbors.Count > 0)
+                        {
+                            <div class="sheet-missing-neighbors"
+                                 style="color:#f59e0b"
+                                 title="Referenced in this sheet's index box but not uploaded yet">
+                                ⚠ Missing: @string.Join(", ", missingNeighbors)
+                            </div>
+                        }
 
                     </div>
                 }
