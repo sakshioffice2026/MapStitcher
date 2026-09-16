@@ -1,354 +1,361 @@
+
 @model MapStitcher.Model.CadSheetGridResult
 
-<!DOCTYPE html>
-<html>
-<head>
+@{
+    ViewData["Title"] = "CAD Sheet Grid";
 
-    <meta charset="utf-8" />
+    var sheetsByPosition = Model.Sheets
+        .ToDictionary(x => (x.Row, x.Column));
+}
 
-    <title>CAD Sheet Grid Result</title>
+<style>
+    .cad-grid-page {
+        padding: 24px;
+    }
 
-    <style>
+    .cad-grid-header {
+        margin-bottom: 24px;
+    }
 
-        body {
-            font-family: Arial, sans-serif;
-            background: #f4f6f8;
-            margin: 0;
-            padding: 30px;
-        }
-
-        .container {
-            max-width: 1500px;
-            margin: auto;
-        }
-
-        .card {
-            background: white;
-            padding: 25px;
-            border-radius: 8px;
-            margin-bottom: 25px;
-            box-shadow: 0 2px 10px rgba(0,0,0,.08);
-        }
-
-        .summary {
-            display: flex;
-            gap: 20px;
-            flex-wrap: wrap;
-        }
-
-        .summary-box {
-            padding: 15px;
-            background: #f1f3f5;
-            border-radius: 6px;
-            min-width: 150px;
-        }
-
-        .summary-label {
-            font-size: 13px;
-            color: #666;
-        }
-
-        .summary-value {
-            font-size: 24px;
-            font-weight: bold;
-        }
-
-        table {
-            border-collapse: collapse;
-            width: 100%;
-        }
-
-        th, td {
-            border: 1px solid #ddd;
-            padding: 10px;
-        }
-
-        th {
-            background: #f0f2f4;
-        }
-
-        .number {
-            text-align: right;
-        }
-
-        .grid {
-            display: grid;
-            grid-template-columns: repeat(@Model.ColumnCount, minmax(180px, 1fr));
-            gap: 12px;
-            margin-top: 20px;
-        }
-
-        .sheet {
-            min-height: 130px;
-            border: 2px solid #333;
-            border-radius: 8px;
-            padding: 15px;
-            background: white;
-            box-sizing: border-box;
-        }
-
-        .sheet-index {
+        .cad-grid-header h1 {
+            margin: 0 0 6px 0;
             font-size: 28px;
-            font-weight: bold;
         }
 
-        .sheet-name {
-            margin-top: 8px;
-            font-size: 13px;
-            word-break: break-all;
-        }
-
-        .sheet-position {
-            margin-top: 8px;
-            font-size: 12px;
+        .cad-grid-header p {
+            margin: 0;
             color: #666;
         }
 
-        .sheet-cad {
-            margin-top: 8px;
-            font-size: 12px;
+    .summary {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(150px, 1fr));
+        gap: 12px;
+        margin-bottom: 30px;
+    }
+
+    .summary-card {
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        padding: 16px;
+        background: #fff;
+    }
+
+        .summary-card .label {
+            display: block;
+            font-size: 13px;
+            color: #777;
+            margin-bottom: 6px;
         }
 
-        .empty {
-            padding: 30px;
-            text-align: center;
-            background: #fff3cd;
+        .summary-card .value {
+            font-size: 24px;
+            font-weight: 600;
         }
 
-        .banner-warning {
-            background: #fff3cd;
-            border-left: 4px solid #f0ad4e;
-            padding: 12px 15px;
-            margin-bottom: 18px;
+    .grid-section {
+        margin-top: 20px;
+    }
+
+        .grid-section h2 {
+            margin-bottom: 6px;
         }
 
-        .banner-success {
-            background: #d4edda;
-            border-left: 4px solid #28a745;
-            padding: 12px 15px;
+    .grid-section-description {
+        color: #666;
+        margin-bottom: 16px;
+    }
+
+    .spatial-grid-wrapper {
+        width: 100%;
+        overflow-x: auto;
+        padding-bottom: 10px;
+    }
+
+    .spatial-grid {
+        display: grid;
+        grid-template-columns: repeat( @Model.ColumnCount, minmax(250px, 1fr));
+        gap: 12px;
+        min-width: max-content;
+    }
+
+    .sheet {
+        min-height: 180px;
+        border: 1px solid #ccc;
+        border-radius: 8px;
+        background: #fff;
+        padding: 16px;
+        box-sizing: border-box;
+    }
+
+    .sheet-index {
+        font-size: 18px;
+        font-weight: 700;
+        margin-bottom: 8px;
+    }
+
+    .sheet-name {
+        font-weight: 600;
+        margin-bottom: 10px;
+        word-break: break-word;
+    }
+
+    .sheet-number {
+        font-size: 14px;
+        margin-bottom: 8px;
+    }
+
+    .sheet-position {
+        font-size: 13px;
+        color: #555;
+        margin-bottom: 8px;
+    }
+
+    .sheet-cad {
+        font-size: 12px;
+        color: #666;
+        line-height: 1.5;
+        margin-top: 10px;
+    }
+
+    .grid-empty {
+        min-height: 180px;
+        border: 2px dashed #bbb;
+        border-radius: 8px;
+        background: #fafafa;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        color: #999;
+        box-sizing: border-box;
+    }
+
+    .grid-empty-title {
+        font-size: 15px;
+        font-weight: 600;
+    }
+
+    .grid-empty-position {
+        margin-top: 5px;
+        font-size: 11px;
+        color: #aaa;
+    }
+
+    .errors-section,
+    .skipped-section {
+        margin-top: 30px;
+        padding: 16px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        background: #fff;
+    }
+
+        .errors-section h2,
+        .skipped-section h2 {
+            margin-top: 0;
+            font-size: 18px;
         }
 
-        .banner-error {
-            background: #fdeaea;
-            border-left: 4px solid #dc3545;
-            padding: 12px 15px;
-            margin-top: 12px;
-        }
-
-        .download-btn {
-            display: inline-block;
-            margin-top: 14px;
-            padding: 10px 22px;
-            background: #0d6efd;
-            color: white;
-            text-decoration: none;
-            border-radius: 5px;
-            font-weight: bold;
-        }
-
-        .download-btn:hover {
-            background: #0b5ed7;
-        }
-
-        ul.msg-list {
-            margin: 8px 0 0 0;
+        .errors-section ul,
+        .skipped-section ul {
+            margin-bottom: 0;
             padding-left: 20px;
         }
 
-    </style>
+    .error-item {
+        margin-bottom: 6px;
+    }
 
-</head>
+    .skipped-item {
+        margin-bottom: 6px;
+    }
 
-<body>
+    .back-link {
+        display: inline-block;
+        margin-top: 24px;
+        text-decoration: none;
+    }
 
-    <div class="container">
+    @@media (max-width: 700px) {
+        .cad-grid-page
 
-        <div class="card">
+    {
+        padding: 16px;
+    }
 
-            <h1>CAD Sheet Grid Result</h1>
+    .summary {
+        grid-template-columns: 1fr;
+    }
 
-            @if (Model.SkippedFileNames.Count > 0)
-            {
-                <div class="banner-warning">
+    .spatial-grid {
+        grid-template-columns: repeat( @Model.ColumnCount, minmax(220px, 220px));
+    }
 
-                    <strong>@Model.SkippedFileNames.Count file(s) skipped</strong> — not DWG/DXF:
+    }</style>
 
-                    <ul class="msg-list">
-                        @foreach (var name in Model.SkippedFileNames)
+<div class="cad-grid-page">
+
+    <div class="cad-grid-header">
+        <h1>CAD Sheet Grid</h1>
+        <p>Spatial arrangement of uploaded CAD sheets.</p>
+    </div>
+
+    <div class="summary">
+
+        <div class="summary-card">
+            <span class="label">Sheets</span>
+            <span class="value">@Model.SheetCount</span>
+        </div>
+
+        <div class="summary-card">
+            <span class="label">Rows</span>
+            <span class="value">@Model.RowCount</span>
+        </div>
+
+        <div class="summary-card">
+            <span class="label">Columns</span>
+            <span class="value">@Model.ColumnCount</span>
+        </div>
+
+    </div>
+
+    <section class="grid-section">
+
+        <h2>Index Grid</h2>
+
+        <div class="grid-section-description">
+            Each sheet is positioned according to its validated
+            North, South, East and West relationships.
+        </div>
+
+        <div class="spatial-grid-wrapper">
+
+            <div class="spatial-grid">
+
+                @for (var row = 0; row < Model.RowCount; row++)
+                {
+                    @for (var column = 0; column < Model.ColumnCount; column++)
+                    {
+                        if (sheetsByPosition.TryGetValue(
+                        (row, column),
+                        out var sheet))
                         {
-                            <li>@name</li>
+                            <div class="sheet">
+
+                                <div class="sheet-index">
+                                    Sheet #@sheet.IndexNumber
+                                </div>
+
+                                <div class="sheet-name">
+                                    @sheet.FileName
+                                </div>
+
+                                <div class="sheet-number">
+                                    Sheet Number:
+                                    <strong>@sheet.SheetNumber</strong>
+                                </div>
+
+                                <div class="sheet-position">
+                                    Row: @sheet.Row
+                                    <br />
+                                    Column: @sheet.Column
+                                </div>
+
+                                <div class="sheet-cad">
+                                    <strong>CAD Bounds</strong>
+                                    <br />
+                                    X:
+                                    @sheet.MinX.ToString("F2")
+                                    –
+                                    @sheet.MaxX.ToString("F2")
+                                    <br />
+                                    Y:
+                                    @sheet.MinY.ToString("F2")
+                                    –
+                                    @sheet.MaxY.ToString("F2")
+                                    <br />
+                                    Width:
+                                    @sheet.Width.ToString("F2")
+                                    <br />
+                                    Height:
+                                    @sheet.Height.ToString("F2")
+                                    <br />
+                                    Entities:
+                                    @sheet.EntityCount
+                                    <br />
+                                    Laghu References:
+                                    @sheet.LaghuReferenceCount
+                                </div>
+
+                            </div>
                         }
-                    </ul>
+                        else
+                        {
+                            <div class="grid-empty">
 
-                </div>
-            }
+                                <div class="grid-empty-title">
+                                    Empty
+                                </div>
 
-            <div class="summary">
+                                <div class="grid-empty-position">
+                                    Row @row · Column @column
+                                </div>
 
-                <div class="summary-box">
-                    <div class="summary-label">Sheets</div>
-                    <div class="summary-value">@Model.SheetCount</div>
-                </div>
-
-                <div class="summary-box">
-                    <div class="summary-label">Rows</div>
-                    <div class="summary-value">@Model.RowCount</div>
-                </div>
-
-                <div class="summary-box">
-                    <div class="summary-label">Columns</div>
-                    <div class="summary-value">@Model.ColumnCount</div>
-                </div>
+                            </div>
+                        }
+                    }
+                }
 
             </div>
 
         </div>
 
+    </section>
 
-        @* <div class="card">
+    @if (Model.MergeErrors != null &&
+        Model.MergeErrors.Count > 0)
+    {
+        <section class="errors-section">
 
-            <h2>Merge Output</h2>
+            <h2>Topology / Processing Messages</h2>
 
-            @if (!string.IsNullOrEmpty(Model.MergeOutputFileName))
-            {
-                <div class="banner-success">
+            <ul>
+                @foreach (var error in Model.MergeErrors)
+                {
+                    <li class="error-item">
+                        @error
+                    </li>
+                }
+            </ul>
 
-                    <strong>Merge successful.</strong>
-                    All @Model.SheetCount sheet(s) stitched into one DXF,
-                    positioned by grid row/column and normalised to a common origin.
+        </section>
+    }
 
-                    <br />
+    @if (Model.SkippedFileNames != null &&
+        Model.SkippedFileNames.Count > 0)
+    {
+        <section class="skipped-section">
 
-                    <a class="download-btn"
-                       href="/CadGrid/Download?fileName=@Model.MergeOutputFileName">
-                        &#8659;&nbsp;Download @Model.MergeOutputFileName
-                    </a>
+            <h2>Skipped Files</h2>
 
-                </div>
-            }
-            else
-            {
-                <div class="banner-error">
-                    <strong>Merge produced no output.</strong>
-                </div>
-            }
+            <ul>
+                @foreach (var fileName in Model.SkippedFileNames)
+                {
+                    <li class="skipped-item">
+                        @fileName
+                    </li>
+                }
+            </ul>
 
-            @if (Model.MergeErrors.Count > 0)
-            {
-                <div class="banner-error">
+        </section>
+    }
 
-                    <strong>Merge errors (@Model.MergeErrors.Count):</strong>
+    <a asp-controller="CadGrid"
+       asp-action="Index"
+       class="back-link">
+        ← Back to Upload
+    </a>
 
-                    <ul class="msg-list">
-                        @foreach (var err in Model.MergeErrors)
-                        {
-                            <li>@err</li>
-                        }
-                    </ul>
+</div>
 
-                </div>
-            }
-
-        </div> *@
-
-
-        <div class="card">
-
-            <h2>Index Grid</h2>
-
-            @if (Model.Sheets.Count == 0)
-            {
-                <div class="empty">No CAD sheets found.</div>
-            }
-            else
-            {
-                <div class="grid">
-
-                    @foreach (var sheet in Model.Sheets.OrderBy(x => x.IndexNumber))
-                    {
-                        <div class="sheet">
-
-                            <div class="sheet-index">
-                                #@sheet.IndexNumber
-                            </div>
-
-                            <div class="sheet-name">
-                                @sheet.FileName
-                            </div>
-
-                            <div class="sheet-position">
-                                Row: @sheet.Row &nbsp; Column: @sheet.Column
-                            </div>
-
-                            <div class="sheet-cad">
-                                X: @sheet.MinX.ToString("F2") – @sheet.MaxX.ToString("F2")<br />
-                                Y: @sheet.MinY.ToString("F2") – @sheet.MaxY.ToString("F2")
-                            </div>
-
-                            <div class="sheet-position">
-                                Entities: @sheet.EntityCount<br />
-                                Laghu: @sheet.LaghuReferenceCount
-                            </div>
-
-                        </div>
-                    }
-
-                </div>
-            }
-
-        </div>
-
-
-        <div class="card">
-
-            <h2>Sheet Details</h2>
-
-            <table>
-
-                <thead>
-                    <tr>
-                        <th>Index</th>
-                        <th>Row</th>
-                        <th>Col</th>
-                        <th>File</th>
-                        <th>Min X</th>
-                        <th>Min Y</th>
-                        <th>Max X</th>
-                        <th>Max Y</th>
-                        <th>Width</th>
-                        <th>Height</th>
-                        <th>Entities</th>
-                        <th>Laghu</th>
-                    </tr>
-                </thead>
-
-                <tbody>
-
-                    @foreach (var sheet in Model.Sheets.OrderBy(x => x.IndexNumber))
-                    {
-                        <tr>
-                            <td>@sheet.IndexNumber</td>
-                            <td>@sheet.Row</td>
-                            <td>@sheet.Column</td>
-                            <td>@sheet.FileName</td>
-                            <td class="number">@sheet.MinX.ToString("F3")</td>
-                            <td class="number">@sheet.MinY.ToString("F3")</td>
-                            <td class="number">@sheet.MaxX.ToString("F3")</td>
-                            <td class="number">@sheet.MaxY.ToString("F3")</td>
-                            <td class="number">@sheet.Width.ToString("F3")</td>
-                            <td class="number">@sheet.Height.ToString("F3")</td>
-                            <td class="number">@sheet.EntityCount</td>
-                            <td class="number">@sheet.LaghuReferenceCount</td>
-                        </tr>
-                    }
-
-                </tbody>
-
-            </table>
-
-        </div>
-
-    </div>
-
-</body>
-</html>

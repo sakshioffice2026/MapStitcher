@@ -10,70 +10,122 @@ namespace MapStitcher.Business.Services
 {
     public class IndexMapExtractionService : IIndexMapExtractionService
     {
-        private static readonly HashSet<string> NoiseTokens = new(StringComparer.OrdinalIgnoreCase)
-        {
-            "RIVER", "VILLAGE BOUNDARY", "BOUNDARY", "NALA", "ROAD", "-", "--"
-        };
+        private const string HatchLayer = "Sym_Hatch";
+        private const string TitleLayer = "Sym_Title";
 
-        private static readonly Regex AlnumRegex = new(@"[A-Za-z0-9]+", RegexOptions.Compiled);
+        private static readonly HashSet<string> NoiseTokens =
+            new(StringComparer.OrdinalIgnoreCase)
+            {
+                "RIVER",
+                "VILLAGE BOUNDARY",
+                "BOUNDARY",
+                "NALA",
+                "ROAD",
+                "-",
+                "--"
+            };
 
-        public Task<IndexMapNeighbors> ExtractAsync(string filePath, string indexLayerName)
+        private static readonly Regex AlnumRegex =
+            new(@"[A-Za-z0-9]+", RegexOptions.Compiled);
+
+        public Task<IndexMapNeighbors> ExtractAsync(
+            string filePath,
+            string indexLayerName)
         {
             if (!File.Exists(filePath))
-                throw new FileNotFoundException("CAD file was not found.", filePath);
+                throw new FileNotFoundException(
+                    "CAD file was not found.",
+                    filePath);
 
             var ext = Path.GetExtension(filePath).ToLowerInvariant();
-            CadDocument doc = ext == ".dwg" ? DwgReader.Read(filePath) : DxfReader.Read(filePath);
 
-            var linePoints = new List<(double X, double Y)>();
-            var textPoints = new List<(double X, double Y, string Text)>();
-
-            foreach (var entity in doc.Entities)
-            {
-                var layerName = entity.Layer?.Name ?? string.Empty;
-                if (!string.Equals(layerName, indexLayerName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                switch (entity)
-                {
-                    case Line line:
-                        linePoints.Add((line.StartPoint.X, line.StartPoint.Y));
-                        linePoints.Add((line.EndPoint.X, line.EndPoint.Y));
-                        break;
-
-                    case LwPolyline poly:
-                        foreach (var v in poly.Vertices)
-                            linePoints.Add((v.Location.X, v.Location.Y));
-                        break;
-
-                    case TextEntity t:
-                        textPoints.Add((t.InsertPoint.X, t.InsertPoint.Y, DecodeText(t.Value)));
-                        break;
-
-                    case MText mt:
-                        textPoints.Add((mt.InsertPoint.X, mt.InsertPoint.Y, DecodeText(mt.Value)));
-                        break;
-                }
-            }
+            CadDocument doc =
+                ext == ".dwg"
+                    ? DwgReader.Read(filePath)
+                    : DxfReader.Read(filePath);
 
             var result = new IndexMapNeighbors();
 
-            if (linePoints.Count == 0)
+            /*
+             * ---------------------------------------------------------
+             * 1. Find the spatial/index-map area from Sym_Hatch
+             * ---------------------------------------------------------
+             */
+
+            double minX = double.MaxValue;
+            double minY = double.MaxValue;
+            double maxX = double.MinValue;
+            double maxY = double.MinValue;
+
+            int hatchCount = 0;
+
+            foreach (var entity in doc.Entities)
             {
-                result.Warnings.Add($"No LINE/LWPOLYLINE geometry found on layer '{indexLayerName}'.");
+                var layerName =
+                    entity.Layer?.Name ?? string.Empty;
+
+                if (!string.Equals(
+                        layerName,
+                        HatchLayer,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                if (entity is not Hatch hatch)
+                    continue;
+
+                var bounds = hatch.GetBoundingBox();
+
+                if (bounds == null)
+                    continue;
+
+                minX = Math.Min(minX, bounds.Min.X);
+                minY = Math.Min(minY, bounds.Min.Y);
+                maxX = Math.Max(maxX, bounds.Max.X);
+                maxY = Math.Max(maxY, bounds.Max.Y);
+
+                hatchCount++;
+            }
+
+            if (hatchCount == 0)
+            {
+                result.Warnings.Add(
+                    $"No HATCH geometry found on layer '{HatchLayer}'.");
+
                 return Task.FromResult(result);
             }
 
-            double minX = linePoints.Min(p => p.X), maxX = linePoints.Max(p => p.X);
-            double minY = linePoints.Min(p => p.Y), maxY = linePoints.Max(p => p.Y);
-            double thirdW = (maxX - minX) / 3.0;
-            double thirdH = (maxY - minY) / 3.0;
-
-            if (thirdW <= 0 || thirdH <= 0)
+            if (minX == double.MaxValue ||
+                minY == double.MaxValue ||
+                maxX == double.MinValue ||
+                maxY == double.MinValue)
             {
-                result.Warnings.Add("Index grid bounding box is degenerate (zero width/height).");
+                result.Warnings.Add(
+                    $"Unable to calculate bounding box for layer '{HatchLayer}'.");
+
                 return Task.FromResult(result);
             }
+
+            double width = maxX - minX;
+            double height = maxY - minY;
+
+            if (width <= 0 || height <= 0)
+            {
+                result.Warnings.Add(
+                    "Sym_Hatch spatial area has zero width or height.");
+
+                return Task.FromResult(result);
+            }
+
+            /*
+             * ---------------------------------------------------------
+             * 2. Divide the spatial area into a 3 x 3 grid
+             * ---------------------------------------------------------
+             */
+
+            double thirdWidth = width / 3.0;
+            double thirdHeight = height / 3.0;
 
             var cellTexts = new Dictionary<string, List<string>>
             {
@@ -84,86 +136,212 @@ namespace MapStitcher.Business.Services
                 ["Right"] = new()
             };
 
-            var cornerCount = 0;
+            /*
+             * ---------------------------------------------------------
+             * 3. Read sheet numbers from Sym_Title
+             * ---------------------------------------------------------
+             */
 
-            foreach (var (x, y, raw) in textPoints)
+            foreach (var entity in doc.Entities)
             {
-                var cleaned = Sanitize(raw);
-                if (cleaned == null) continue;
+                var layerName =
+                    entity.Layer?.Name ?? string.Empty;
 
-                int col = ClampThird((x - minX) / thirdW);
-                int row = ClampThird((y - minY) / thirdH); // row 0 = bottom, 2 = top (CAD Y-up)
+                if (!string.Equals(
+                        layerName,
+                        TitleLayer,
+                        StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
 
-                string? cell = (row, col) switch
+                double x;
+                double y;
+                string rawText;
+
+                switch (entity)
+                {
+                    case TextEntity text:
+                        x = text.InsertPoint.X;
+                        y = text.InsertPoint.Y;
+                        rawText = text.Value;
+                        break;
+
+                    case MText mtext:
+                        x = mtext.InsertPoint.X;
+                        y = mtext.InsertPoint.Y;
+                        rawText = mtext.Value;
+                        break;
+
+                    default:
+                        continue;
+                }
+
+                var cleaned = Sanitize(rawText);
+
+                if (cleaned == null)
+                    continue;
+
+                /*
+                 * Ignore titles outside the Sym_Hatch spatial area.
+                 */
+                if (x < minX ||
+                    x > maxX ||
+                    y < minY ||
+                    y > maxY)
+                {
+                    continue;
+                }
+
+                int column =
+                    ClampThird(
+                        (x - minX) / thirdWidth);
+
+                int row =
+                    ClampThird(
+                        (y - minY) / thirdHeight);
+
+                string? cell = (row, column) switch
                 {
                     (1, 1) => "Center",
+
+                    // CAD coordinates: Y increases upward.
                     (2, 1) => "Top",
+
                     (0, 1) => "Bottom",
+
                     (1, 0) => "Left",
+
                     (1, 2) => "Right",
-                    (2, 0) or (2, 2) or (0, 0) or (0, 2) => "Corner",
+
                     _ => null
                 };
-
-                if (cell == "Corner")
-                {
-                    cornerCount++;
-                    continue; // corners are not part of the neighbor model, ignored by design
-                }
 
                 if (cell != null)
                     cellTexts[cell].Add(cleaned);
             }
 
-            if (cornerCount > 0)
-                result.Warnings.Add($"{cornerCount} label(s) in corner cells ignored (not part of Top/Bottom/Left/Right/Center model).");
+            /*
+             * ---------------------------------------------------------
+             * 4. Resolve sheet numbers
+             * ---------------------------------------------------------
+             */
 
-            result.CenterSheetNumber = Pick(cellTexts["Center"], "Center", result.Warnings);
-            result.TopSheetNumber = Pick(cellTexts["Top"], "Top", result.Warnings);
-            result.BottomSheetNumber = Pick(cellTexts["Bottom"], "Bottom", result.Warnings);
-            result.LeftSheetNumber = Pick(cellTexts["Left"], "Left", result.Warnings);
-            result.RightSheetNumber = Pick(cellTexts["Right"], "Right", result.Warnings);
+            result.CenterSheetNumber =
+                Pick(
+                    cellTexts["Center"],
+                    "Center",
+                    result.Warnings);
+
+            result.TopSheetNumber =
+                Pick(
+                    cellTexts["Top"],
+                    "Top",
+                    result.Warnings);
+
+            result.BottomSheetNumber =
+                Pick(
+                    cellTexts["Bottom"],
+                    "Bottom",
+                    result.Warnings);
+
+            result.LeftSheetNumber =
+                Pick(
+                    cellTexts["Left"],
+                    "Left",
+                    result.Warnings);
+
+            result.RightSheetNumber =
+                Pick(
+                    cellTexts["Right"],
+                    "Right",
+                    result.Warnings);
+
+            if (result.CenterSheetNumber == null)
+            {
+                result.Warnings.Add(
+                    $"No sheet number found in Center cell on layer '{TitleLayer}'.");
+            }
 
             return Task.FromResult(result);
         }
 
         private static int ClampThird(double ratio)
         {
-            if (ratio < 1.0 / 3.0) return 0;
-            if (ratio < 2.0 / 3.0) return 1;
+            if (ratio < 1.0 / 3.0)
+                return 0;
+
+            if (ratio < 2.0 / 3.0)
+                return 1;
+
             return 2;
         }
 
-        private static string? Pick(List<string> candidates, string cellName, List<string> warnings)
+        private static string? Pick(
+            List<string> candidates,
+            string cellName,
+            List<string> warnings)
         {
-            if (candidates.Count == 0) return null;
+            if (candidates.Count == 0)
+                return null;
 
-            var distinct = candidates.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+            var distinct =
+                candidates
+                    .Distinct(StringComparer.OrdinalIgnoreCase)
+                    .ToList();
+
             if (distinct.Count > 1)
-                warnings.Add($"{cellName} cell has conflicting labels: {string.Join(", ", distinct)}. Using first.");
+            {
+                warnings.Add(
+                    $"{cellName} cell has conflicting labels: " +
+                    $"{string.Join(", ", distinct)}. Using first.");
+            }
 
             return distinct[0];
         }
 
         private static string? Sanitize(string? raw)
         {
-            if (string.IsNullOrWhiteSpace(raw)) return null;
+            if (string.IsNullOrWhiteSpace(raw))
+                return null;
 
-            var text = DecodeText(raw).Trim();
+            var text =
+                DecodeText(raw).Trim();
 
             foreach (var noise in NoiseTokens)
-                text = Regex.Replace(text, Regex.Escape(noise), "", RegexOptions.IgnoreCase);
+            {
+                text = Regex.Replace(
+                    text,
+                    Regex.Escape(noise),
+                    "",
+                    RegexOptions.IgnoreCase);
+            }
 
-            text = text.Trim(' ', '-', '.', ':', '\t');
+            text = text.Trim(
+                ' ',
+                '-',
+                '.',
+                ':',
+                '\t');
 
-            return AlnumRegex.IsMatch(text) ? text : null;
+            return AlnumRegex.IsMatch(text)
+                ? text
+                : null;
         }
 
         private static string DecodeText(string? raw)
         {
-            if (string.IsNullOrEmpty(raw)) return string.Empty;
-            try { return DxfUnicodeEscapeDecoder.Decode(raw); }
-            catch { return raw; }
+            if (string.IsNullOrEmpty(raw))
+                return string.Empty;
+
+            try
+            {
+                return DxfUnicodeEscapeDecoder.Decode(raw);
+            }
+            catch
+            {
+                return raw;
+            }
         }
     }
 }
