@@ -106,7 +106,8 @@ namespace MapStitcher.Business.Services
             var processed =
                 new HashSet<string>();
 
-            var placedSheets = new List<SurveySheet>();
+            var placedSheets =
+                new List<SurveySheet>();
 
             var maxPasses =
                 Math.Max(sheets.Count * 2, 1);
@@ -115,13 +116,12 @@ namespace MapStitcher.Business.Services
             {
                 var progress = false;
 
-                // Reload from DB every pass so TransformTranslateX/Y values
-                // updated by a previous merge are visible to the next sheet
-                // in the chain — without this, all offsets compose onto 0
-                // and every sheet lands at the origin (overlap).
                 placedSheets =
                     (await _sheetRepo.GetByProjectIdAsync(projectId))
-                    .Where(s => s.GridRow.HasValue && s.GridCol.HasValue)
+                    .Where(
+                        s =>
+                            s.GridRow.HasValue &&
+                            s.GridCol.HasValue)
                     .ToList();
 
                 foreach (var sheet in placedSheets)
@@ -170,10 +170,6 @@ namespace MapStitcher.Business.Services
                     break;
             }
 
-            /*
-             * Add outcomes for sheets that have no currently available
-             * grid neighbor.
-             */
             foreach (var sheet in placedSheets)
             {
                 var alreadyReported =
@@ -230,11 +226,6 @@ namespace MapStitcher.Business.Services
             if (neighbors.Count == 0)
                 return null;
 
-            /*
-             * Prefer an already merged/global sheet as the base because
-             * its TransformTranslateX/Y already represents the global
-             * coordinate system.
-             */
             var mergedNeighbor =
                 neighbors
                     .Where(

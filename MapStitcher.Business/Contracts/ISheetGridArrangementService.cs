@@ -20,6 +20,17 @@
         public int ColumnsPerRow { get; set; }
         public List<SheetGridPlacement> Placements { get; set; } = new();
         public string? Message { get; set; }
+
+        /// <summary>True when GridRow/GridCol came from BFS over the title-block
+        /// index-box N/S/E/W neighbor links; false when it fell back to the
+        /// alphabetical columnsPerRow layout because no sheet in the project had
+        /// any neighbor data.</summary>
+        public bool UsedNeighborGraph { get; set; }
+
+        /// <summary>Neighbor disagreements (two sheets both claim the same grid
+        /// cell) and sheets with no neighbor path back to the root, found while
+        /// walking the graph. Non-fatal — arrangement still succeeds.</summary>
+        public List<string> Conflicts { get; set; } = new();
     }
 
     /// <summary>

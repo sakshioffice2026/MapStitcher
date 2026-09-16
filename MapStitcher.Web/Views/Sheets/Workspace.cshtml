@@ -157,6 +157,10 @@
                     var existingSheetNumbers = new HashSet<string>(
                         Model.Sheets.Select(s => s.SheetNumber),
                         StringComparer.OrdinalIgnoreCase);
+
+                    var sheetIdByNumber = Model.Sheets
+                        .GroupBy(s => s.SheetNumber, StringComparer.OrdinalIgnoreCase)
+                        .ToDictionary(g => g.Key, g => g.First().SheetID, StringComparer.OrdinalIgnoreCase);
                 }
 
                 @foreach (var sheet in Model.Sheets.OrderBy(s => s.SheetNumber))
@@ -183,6 +187,21 @@
                     CheckNeighbor("S", sheet.NeighborSheetNumberSouth);
                     CheckNeighbor("E", sheet.NeighborSheetNumberEast);
                     CheckNeighbor("W", sheet.NeighborSheetNumberWest);
+
+                    var presentNeighbors = new List<(string Direction, string Number, int Id)>();
+                    void AddPresentNeighbor(string direction, string? neighborNumber)
+                    {
+                        if (!string.IsNullOrWhiteSpace(neighborNumber) &&
+                            sheetIdByNumber.TryGetValue(neighborNumber, out var neighborId) &&
+                            neighborId != sheet.SheetID)
+                        {
+                            presentNeighbors.Add((direction, neighborNumber, neighborId));
+                        }
+                    }
+                    AddPresentNeighbor("N", sheet.NeighborSheetNumberNorth);
+                    AddPresentNeighbor("S", sheet.NeighborSheetNumberSouth);
+                    AddPresentNeighbor("E", sheet.NeighborSheetNumberEast);
+                    AddPresentNeighbor("W", sheet.NeighborSheetNumberWest);
 
                     <div class="sidebar-sheet @(isPlaced ? "placed" : "unplaced")"
                          onclick="selectSheet(@sheet.SheetID)"
@@ -238,11 +257,70 @@
                             </div>
                         }
 
+                        @if (presentNeighbors.Count > 0)
+                        {
+                            <div class="sheet-neighbor-actions" onclick="event.stopPropagation()">
+                                @foreach (var n in presentNeighbors)
+                                {
+                                    <div style="font-size:11px; display:flex; align-items:center; gap:4px; margin-top:3px;">
+                                        <span style="color:#94a3b8">@n.Direction → @n.Number</span>
+
+                                        <a href="@Url.Action("Test", "CadastralMerge", new { baseSheetId = sheet.SheetID, adjacentSheetId = n.Id })"
+                                           class="btn btn-outline-light"
+                                           style="padding:0 4px; font-size:10px; line-height:1.4;">
+                                            Test
+                                        </a>
+
+                                        <form method="post"
+                                              action="@Url.Action("Merge", "Sheets")"
+                                              style="display:inline;">
+                                            @Html.AntiForgeryToken()
+                                            <input type="hidden" name="baseSheetId" value="@sheet.SheetID" />
+                                            <input type="hidden" name="adjacentSheetId" value="@n.Id" />
+                                            <button type="submit"
+                                                    class="btn btn-outline-success"
+                                                    style="padding:0 4px; font-size:10px; line-height:1.4;">
+                                                Merge
+                                            </button>
+                                        </form>
+                                    </div>
+                                }
+                            </div>
+                        }
+
                     </div>
                 }
 
             </div>
 
+
+            <div class="sidebar-manual-merge" style="padding:10px; border-top:1px solid #334155;">
+                <div style="font-size:12px; color:#94a3b8; margin-bottom:6px;">
+                    Test / Merge Any Two Sheets
+                </div>
+
+                <form method="get" action="@Url.Action("Test", "CadastralMerge")">
+                    <select name="baseSheetId"
+                            class="form-select form-select-sm bg-dark text-light border-secondary mb-1">
+                        @foreach (var s in Model.Sheets.OrderBy(s => s.SheetNumber))
+                        {
+                            <option value="@s.SheetID">Sheet @s.SheetNumber</option>
+                        }
+                    </select>
+
+                    <select name="adjacentSheetId"
+                            class="form-select form-select-sm bg-dark text-light border-secondary mb-2">
+                        @foreach (var s in Model.Sheets.OrderBy(s => s.SheetNumber))
+                        {
+                            <option value="@s.SheetID">Sheet @s.SheetNumber</option>
+                        }
+                    </select>
+
+                    <button type="submit" class="btn btn-sm btn-outline-light w-100">
+                        Test Relationship
+                    </button>
+                </form>
+            </div>
 
             <div class="sidebar-upload">
 
