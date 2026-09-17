@@ -11,6 +11,7 @@ namespace MapStitcher.Web.Controllers
                 return "sheet";
 
             var invalid = Path.GetInvalidFileNameChars();
+
             var chars = value
                 .Where(c => !invalid.Contains(c) && c != '_')
                 .ToArray();
@@ -23,13 +24,16 @@ namespace MapStitcher.Web.Controllers
         }
 
         private readonly ISheetArrangementOrchestrator _arrangementService;
+        private readonly ICadSheetGridService _cadGridService;
         private readonly IWebHostEnvironment _environment;
 
         public CadGridController(
             ISheetArrangementOrchestrator arrangementService,
+            ICadSheetGridService cadGridService,
             IWebHostEnvironment environment)
         {
             _arrangementService = arrangementService;
+            _cadGridService = cadGridService;
             _environment = environment;
         }
 
@@ -50,12 +54,12 @@ namespace MapStitcher.Web.Controllers
             {
                 if (files == null || files.Count == 0)
                 {
-                    ViewBag.Error = "Please select one or more DWG/DXF files.";
+                    ViewBag.Error =
+                        "Please select one or more DWG/DXF files.";
+
                     return View();
                 }
 
-                // Per-request GUID subdirectory prevents race conditions when
-                // multiple users upload simultaneously to the same server.
                 var tempDirectory = Path.Combine(
                     _environment.ContentRootPath,
                     "TempCadGrid",
@@ -76,14 +80,17 @@ namespace MapStitcher.Web.Controllers
                             .GetExtension(file.FileName)
                             .ToLowerInvariant();
 
-                        if (extension != ".dwg" && extension != ".dxf")
+                        if (extension != ".dwg" &&
+                            extension != ".dxf")
                         {
                             skipped.Add(file.FileName);
                             continue;
                         }
 
-                        var originalStem = SanitizeFileNameSegment(
-                            Path.GetFileNameWithoutExtension(file.FileName));
+                        var originalStem =
+                            SanitizeFileNameSegment(
+                                Path.GetFileNameWithoutExtension(
+                                    file.FileName));
 
                         var tempFilePath = Path.Combine(
                             tempDirectory,
@@ -98,45 +105,74 @@ namespace MapStitcher.Web.Controllers
                         await file.CopyToAsync(stream);
                     }
 
+                    if (!Directory.GetFiles(tempDirectory).Any())
+                    {
+                        ViewBag.Error =
+                            "No valid DWG/DXF files were accepted.";
+
+                        return View();
+                    }
+
                     var mergeOutputRoot = Path.Combine(
                         _environment.WebRootPath,
                         "exports",
                         "cadgrid");
 
-                    // Persist a copy of the uploaded files under a session GUID so the
-                    // user can re-export the geometry grid DXF without re-uploading.
-                    // Session folders older than 24 h are cleaned up opportunistically.
-                    var sessionId = Guid.NewGuid().ToString("N");
-                    var sessionFolder = Path.Combine(mergeOutputRoot, "sessions", sessionId);
-                    Directory.CreateDirectory(sessionFolder);
-                    CleanOldSessions(Path.Combine(mergeOutputRoot, "sessions"), TimeSpan.FromHours(24));
+                    Directory.CreateDirectory(mergeOutputRoot);
 
-                    foreach (var f in Directory.GetFiles(tempDirectory))
+                    var sessionsRoot = Path.Combine(
+                        mergeOutputRoot,
+                        "sessions");
+
+                    Directory.CreateDirectory(sessionsRoot);
+
+                    var sessionId =
+                        Guid.NewGuid().ToString("N");
+
+                    var sessionFolder = Path.Combine(
+                        sessionsRoot,
+                        sessionId);
+
+                    Directory.CreateDirectory(sessionFolder);
+
+                    CleanOldSessions(
+                        sessionsRoot,
+                        TimeSpan.FromHours(24));
+
+                    foreach (var file in Directory.GetFiles(
+                                 tempDirectory))
                     {
-                        try { System.IO.File.Copy(f, Path.Combine(sessionFolder, Path.GetFileName(f))); }
-                        catch { /* non-fatal */ }
+                        System.IO.File.Copy(
+                            file,
+                            Path.Combine(
+                                sessionFolder,
+                                Path.GetFileName(file)));
                     }
 
-                    var result = await _arrangementService.ArrangeAsync(tempDirectory, mergeOutputRoot);
-                    result.SessionId = sessionId;
+                    var result =
+                        await _arrangementService.ArrangeAsync(
+                            tempDirectory,
+                            mergeOutputRoot);
 
-                    if (result.SheetCount == 0 && skipped.Count == files.Count)
+                    result.SessionId = sessionId;
+                    result.SkippedFileNames = skipped;
+
+                    if (result.SheetCount == 0 &&
+                        skipped.Count == files.Count)
                     {
-                        // Nothing usable was even uploaded — no point rendering
-                        // an empty Result page.
                         ViewBag.Error =
-                            $"No valid DWG/DXF files were accepted. Skipped: {string.Join(", ", skipped)}";
+                            $"No valid DWG/DXF files were accepted. " +
+                            $"Skipped: {string.Join(", ", skipped)}";
+
                         return View();
                     }
 
-                    // Even when nothing could be placed (SheetCount == 0), the
-                    // arrangement service's diagnostics — which sheet had no
-                    // centre number, which neighbour link failed reciprocity,
-                    // which referenced sheet wasn't uploaded — are the whole
-                    // point of this screen. Swallowing them behind a generic
-                    // "No sheets could be arranged." error hides exactly the
-                    // information needed to fix the input files.
-                    result.SkippedFileNames = skipped;
+                    // The arrangement service only calculates the layout.
+                    // The CAD grid service performs the actual merge/export.
+                    await _cadGridService.MergeGridAsync(
+                        result,
+                        mergeOutputRoot);
+
                     return View("Result", result);
                 }
                 finally
@@ -144,94 +180,243 @@ namespace MapStitcher.Web.Controllers
                     try
                     {
                         if (Directory.Exists(tempDirectory))
-                            Directory.Delete(tempDirectory, true);
+                            Directory.Delete(
+                                tempDirectory,
+                                true);
                     }
                     catch
                     {
-                        // Ignore cleanup failure.
                     }
                 }
             }
             catch (Exception ex)
             {
-                ViewBag.Error = $"Arrangement failed: {ex.Message}";
+                ViewBag.Error =
+                    $"Arrangement/export failed: {ex.Message}";
+
                 return View();
             }
         }
 
-        // Re-export the geometry grid DXF from persistent session files.
-        // Called by the "Export Merged Sheets" button on the Result page when
-        // the first-attempt stitch failed (MergeOutputFileName was null) or when
-        // the user returns to the page and wants a fresh download.
         [HttpGet]
-        public async Task<IActionResult> ExportGeometryGrid(string sessionId)
+        public Task<IActionResult> ExportGeometryGrid(
+            string sessionId)
+        {
+            return ExportSessionFile(
+                sessionId,
+                "dxf");
+        }
+
+        [HttpGet]
+        public Task<IActionResult> ExportGeometryGridDwg(
+            string sessionId)
+        {
+            return ExportSessionFile(
+                sessionId,
+                "dwg");
+        }
+
+        private async Task<IActionResult> ExportSessionFile(
+            string sessionId,
+            string format)
         {
             if (string.IsNullOrWhiteSpace(sessionId))
-                return BadRequest("Session ID is required.");
+                return BadRequest(
+                    "Session ID is required.");
 
-            // Path.GetFileName strips any directory traversal characters.
-            var safeId = Path.GetFileName(sessionId);
+            var safeId =
+                Path.GetFileName(sessionId);
+
+            if (!string.Equals(
+                    safeId,
+                    sessionId,
+                    StringComparison.Ordinal))
+            {
+                return BadRequest(
+                    "Invalid session ID.");
+            }
+
             var sessionFolder = Path.Combine(
-                _environment.WebRootPath, "exports", "cadgrid", "sessions", safeId);
+                _environment.WebRootPath,
+                "exports",
+                "cadgrid",
+                "sessions",
+                safeId);
 
             if (!Directory.Exists(sessionFolder))
-                return NotFound("Session files not found or expired. Please re-upload your files.");
+            {
+                return NotFound(
+                    "Session files not found or expired. " +
+                    "Please re-upload your files.");
+            }
 
-            var mergeOutputRoot = Path.Combine(_environment.WebRootPath, "exports", "cadgrid");
+            var mergeOutputRoot = Path.Combine(
+                _environment.WebRootPath,
+                "exports",
+                "cadgrid");
 
             try
             {
-                var result = await _arrangementService.ArrangeAsync(sessionFolder, mergeOutputRoot);
+                var result =
+                    await _arrangementService.ArrangeAsync(
+                        sessionFolder,
+                        mergeOutputRoot);
 
-                if (string.IsNullOrWhiteSpace(result.MergeOutputFileName))
+                result.SessionId = safeId;
+
+                await _cadGridService.MergeGridAsync(
+                    result,
+                    mergeOutputRoot);
+
+                if (string.Equals(
+                        format,
+                        "dwg",
+                        StringComparison.OrdinalIgnoreCase))
                 {
-                    var diagnostics = result.MergeErrors.Count > 0
-                        ? string.Join("; ", result.MergeErrors.TakeLast(5))
-                        : "No sheets with valid geometry extents were found.";
-                    TempData["Error"] = $"Export failed: {diagnostics}";
-                    return RedirectToAction("Index");
+                    if (string.IsNullOrWhiteSpace(
+                            result.MergeOutputFileName))
+                    {
+                        return BuildExportError(result);
+                    }
+
+                    var dwgFileName =
+                        Path.ChangeExtension(
+                            result.MergeOutputFileName,
+                            ".dwg");
+
+                    var dwgPath = Path.Combine(
+                        mergeOutputRoot,
+                        dwgFileName);
+
+                    if (!System.IO.File.Exists(dwgPath))
+                    {
+                        return BuildExportError(
+                            result,
+                            "The merged DWG file was not created.");
+                    }
+
+                    var dwgBytes =
+                        await System.IO.File.ReadAllBytesAsync(
+                            dwgPath);
+
+                    return File(
+                        dwgBytes,
+                        "application/acad",
+                        dwgFileName);
                 }
 
-                var fullPath = Path.Combine(mergeOutputRoot, result.MergeOutputFileName);
-                var fileBytes = await System.IO.File.ReadAllBytesAsync(fullPath);
-                return File(fileBytes, "application/dxf", result.MergeOutputFileName);
+                if (string.IsNullOrWhiteSpace(
+                        result.MergeOutputFileName))
+                {
+                    return BuildExportError(result);
+                }
+
+                var dxfPath = Path.Combine(
+                    mergeOutputRoot,
+                    result.MergeOutputFileName);
+
+                if (!System.IO.File.Exists(dxfPath))
+                {
+                    return BuildExportError(
+                        result,
+                        "The merged DXF file was not created.");
+                }
+
+                var dxfBytes =
+                    await System.IO.File.ReadAllBytesAsync(
+                        dxfPath);
+
+                return File(
+                    dxfBytes,
+                    "application/dxf",
+                    result.MergeOutputFileName);
             }
             catch (Exception ex)
             {
-                TempData["Error"] = $"Export failed: {ex.Message}";
+                TempData["Error"] =
+                    $"Export failed: {ex.Message}";
+
                 return RedirectToAction("Index");
             }
         }
 
-        // Deletes session subdirectories older than the given age.
-        // Called opportunistically on each upload to prevent unbounded disk growth.
-        private static void CleanOldSessions(string sessionsRoot, TimeSpan maxAge)
+        private IActionResult BuildExportError(
+            MapStitcher.Model.CadSheetGridResult result,
+            string? fallback = null)
+        {
+            var diagnostics =
+                result.MergeErrors.Count > 0
+                    ? string.Join(
+                        "; ",
+                        result.MergeErrors.TakeLast(5))
+                    : fallback ??
+                      "No sheets with valid geometry extents were found.";
+
+            TempData["Error"] =
+                $"Export failed: {diagnostics}";
+
+            return RedirectToAction("Index");
+        }
+
+        private static void CleanOldSessions(
+            string sessionsRoot,
+            TimeSpan maxAge)
         {
             if (!Directory.Exists(sessionsRoot))
                 return;
 
-            var cutoff = DateTime.UtcNow - maxAge;
-            foreach (var dir in Directory.GetDirectories(sessionsRoot))
+            var cutoff =
+                DateTime.UtcNow - maxAge;
+
+            foreach (var directory in Directory.GetDirectories(
+                         sessionsRoot))
             {
                 try
                 {
-                    if (Directory.GetCreationTimeUtc(dir) < cutoff)
-                        Directory.Delete(dir, recursive: true);
+                    if (Directory.GetCreationTimeUtc(directory) <
+                        cutoff)
+                    {
+                        Directory.Delete(
+                            directory,
+                            recursive: true);
+                    }
                 }
-                catch { /* non-fatal */ }
+                catch
+                {
+                }
             }
         }
 
         [HttpGet]
-        public IActionResult DownloadMerged(string fileName)
+        public IActionResult DownloadMerged(
+            string fileName)
         {
-            // Path.GetFileName strips any directory segments, so a fileName
-            // like "..\..\secrets.txt" collapses to "secrets.txt" and can only
-            // ever resolve inside the cadgrid exports folder below.
-            var safeFileName = Path.GetFileName(fileName ?? string.Empty);
+            var safeFileName =
+                Path.GetFileName(
+                    fileName ?? string.Empty);
 
-            if (string.IsNullOrWhiteSpace(safeFileName))
-                return NotFound("No file specified.");
+            if (string.IsNullOrWhiteSpace(
+                    safeFileName))
+            {
+                return NotFound(
+                    "No file specified.");
+            }
+
+            var extension =
+                Path.GetExtension(safeFileName);
+
+            if (!string.Equals(
+                    extension,
+                    ".dxf",
+                    StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(
+                    extension,
+                    ".dwg",
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                return BadRequest(
+                    "Only DWG and DXF files can be downloaded.");
+            }
 
             var fullPath = Path.Combine(
                 _environment.WebRootPath,
@@ -240,10 +425,27 @@ namespace MapStitcher.Web.Controllers
                 safeFileName);
 
             if (!System.IO.File.Exists(fullPath))
-                return NotFound("Merged file not found. It may have expired — please re-run the arrangement.");
+            {
+                return NotFound(
+                    "Merged file not found. " +
+                    "It may have expired — please re-run the arrangement.");
+            }
 
-            var fileBytes = System.IO.File.ReadAllBytes(fullPath);
-            return File(fileBytes, "application/dxf", safeFileName);
+            var fileBytes =
+                System.IO.File.ReadAllBytes(fullPath);
+
+            var contentType =
+                string.Equals(
+                    extension,
+                    ".dwg",
+                    StringComparison.OrdinalIgnoreCase)
+                    ? "application/acad"
+                    : "application/dxf";
+
+            return File(
+                fileBytes,
+                contentType,
+                safeFileName);
         }
     }
 }

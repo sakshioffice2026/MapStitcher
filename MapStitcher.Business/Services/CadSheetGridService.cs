@@ -20,60 +20,91 @@ namespace MapStitcher.Business.Services
 
         private readonly ICadCoordinateInspectionService _inspectionService;
 
-        public CadSheetGridService(ICadCoordinateInspectionService inspectionService)
+        public CadSheetGridService(
+            ICadCoordinateInspectionService inspectionService)
         {
             _inspectionService = inspectionService;
         }
 
-        public async Task<CadSheetGridResult> BuildGridAsync(string directoryPath)
+        public async Task<CadSheetGridResult> BuildGridAsync(
+            string directoryPath)
         {
             if (string.IsNullOrWhiteSpace(directoryPath))
-                throw new ArgumentException("CAD directory is required.", nameof(directoryPath));
+            {
+                throw new ArgumentException(
+                    "CAD directory is required.",
+                    nameof(directoryPath));
+            }
 
             if (!Directory.Exists(directoryPath))
-                throw new DirectoryNotFoundException($"CAD directory does not exist: {directoryPath}");
+            {
+                throw new DirectoryNotFoundException(
+                    $"CAD directory does not exist: {directoryPath}");
+            }
 
             var files = Directory
-                .GetFiles(directoryPath, "*.*", SearchOption.TopDirectoryOnly)
+                .GetFiles(
+                    directoryPath,
+                    "*.*",
+                    SearchOption.TopDirectoryOnly)
                 .Where(IsCadFile)
                 .ToList();
 
             if (files.Count == 0)
                 return new CadSheetGridResult();
 
-            var sheets = new List<CadSheetGridItem>();
+            var sheets =
+                new List<CadSheetGridItem>();
 
             foreach (var file in files)
             {
                 try
                 {
-                    var fileName = Path.GetFileName(file);
-                    var indexNumber = GetIndexNumber(fileName);
+                    var fileName =
+                        Path.GetFileName(file);
 
-                    var inspectionResult = await _inspectionService.InspectFileAsync(file, fileName);
+                    var indexNumber =
+                        GetIndexNumber(fileName);
 
-                    sheets.Add(new CadSheetGridItem
-                    {
-                        IndexNumber = indexNumber,
-                        FileName = fileName,
-                        FilePath = file,
-                        SheetNumber = inspectionResult.SheetNumber,
-                        MinX = inspectionResult.MinX,
-                        MinY = inspectionResult.MinY,
-                        MaxX = inspectionResult.MaxX,
-                        MaxY = inspectionResult.MaxY,
-                        EntityCount = inspectionResult.EntityCount,
-                        LaghuReferenceCount = inspectionResult.LaghuReferences.Count,
-                        LaghuReferences = inspectionResult.LaghuReferences.ToList()
-                    });
+                    var inspectionResult =
+                        await _inspectionService.InspectFileAsync(
+                            file,
+                            fileName);
+
+                    sheets.Add(
+                        new CadSheetGridItem
+                        {
+                            IndexNumber = indexNumber,
+                            FileName = fileName,
+                            FilePath = file,
+                            SheetNumber =
+                                inspectionResult.SheetNumber,
+                            MinX =
+                                inspectionResult.MinX,
+                            MinY =
+                                inspectionResult.MinY,
+                            MaxX =
+                                inspectionResult.MaxX,
+                            MaxY =
+                                inspectionResult.MaxY,
+                            EntityCount =
+                                inspectionResult.EntityCount,
+                            LaghuReferenceCount =
+                                inspectionResult
+                                    .LaghuReferences
+                                    .Count,
+                            LaghuReferences =
+                                inspectionResult
+                                    .LaghuReferences
+                                    .ToList()
+                        });
                 }
                 catch
                 {
-                    // One bad DWG should not block the rest.
+                    // Keep processing other CAD files.
                 }
             }
 
-            // Deduplicate colliding filename-derived indexes before gap-filling.
             DeduplicateIndexes(sheets);
             AssignMissingIndexes(sheets);
 
@@ -82,24 +113,37 @@ namespace MapStitcher.Business.Services
                 .ThenBy(x => x.FileName)
                 .ToList();
 
-            var columnCount = CalculateColumnCount(sheets.Count);
+            var columnCount =
+                CalculateColumnCount(
+                    sheets.Count);
 
-            for (int i = 0; i < sheets.Count; i++)
+            for (int i = 0;
+                 i < sheets.Count;
+                 i++)
             {
-                var sheet = sheets[i];
-                var zeroBasedIndex = sheet.IndexNumber - 1;
+                var sheet =
+                    sheets[i];
 
-                // Large filename trailing numbers (e.g. "000042" in a 3-file batch)
-                // would produce a huge sparse grid. Fall back to sorted position whenever
-                // the raw index would place the sheet outside the actual list bounds.
-                if (zeroBasedIndex < 0 || zeroBasedIndex >= sheets.Count)
+                var zeroBasedIndex =
+                    sheet.IndexNumber - 1;
+
+                if (zeroBasedIndex < 0 ||
+                    zeroBasedIndex >= sheets.Count)
+                {
                     zeroBasedIndex = i;
+                }
 
-                sheet.Row = zeroBasedIndex / columnCount;
-                sheet.Column = zeroBasedIndex % columnCount;
+                sheet.Row =
+                    zeroBasedIndex / columnCount;
+
+                sheet.Column =
+                    zeroBasedIndex % columnCount;
             }
 
-            var rowCount = sheets.Count == 0 ? 0 : sheets.Max(x => x.Row) + 1;
+            var rowCount =
+                sheets.Count == 0
+                    ? 0
+                    : sheets.Max(x => x.Row) + 1;
 
             return new CadSheetGridResult
             {
@@ -110,169 +154,644 @@ namespace MapStitcher.Business.Services
             };
         }
 
-        public Task MergeGridAsync(CadSheetGridResult result, string outputDirectory)
+        public Task MergeGridAsync(
+            CadSheetGridResult result,
+            string outputDirectory)
         {
-            if (result.Sheets.Count == 0)
+            if (result == null)
             {
-                result.MergeErrors.Add("No sheets to merge.");
+                throw new ArgumentNullException(
+                    nameof(result));
+            }
+
+            if (string.IsNullOrWhiteSpace(
+                    outputDirectory))
+            {
+                throw new ArgumentException(
+                    "Output directory is required.",
+                    nameof(outputDirectory));
+            }
+
+            if (result.Sheets == null ||
+                result.Sheets.Count == 0)
+            {
+                result.MergeErrors.Add(
+                    "No sheets to merge.");
+
                 return Task.CompletedTask;
             }
 
-            int columnCount = result.ColumnCount > 0
-                ? result.ColumnCount
-                : result.Sheets.Max(s => s.Column) + 1;
+            var columnCount =
+                result.ColumnCount > 0
+                    ? result.ColumnCount
+                    : result.Sheets.Max(
+                        x => x.Column) + 1;
 
-            int rowCount = result.RowCount > 0
-                ? result.RowCount
-                : result.Sheets.Max(s => s.Row) + 1;
+            var rowCount =
+                result.RowCount > 0
+                    ? result.RowCount
+                    : result.Sheets.Max(
+                        x => x.Row) + 1;
 
-            // Per-column max width and per-row max height so that sheets of
-            // different sizes never overlap on the merged canvas.
-            var colMaxWidth = new double[columnCount];
-            var rowMaxHeight = new double[rowCount];
+            var columnWidths =
+                new double[columnCount];
+
+            var rowHeights =
+                new double[rowCount];
 
             foreach (var sheet in result.Sheets)
             {
-                var w = sheet.Width > 0 ? sheet.Width : DefaultCellSize;
-                var h = sheet.Height > 0 ? sheet.Height : DefaultCellSize;
+                var width =
+                    sheet.MaxX > sheet.MinX
+                        ? sheet.MaxX - sheet.MinX
+                        : DefaultCellSize;
 
-                if (sheet.Column < columnCount && w > colMaxWidth[sheet.Column])
-                    colMaxWidth[sheet.Column] = w;
+                var height =
+                    sheet.MaxY > sheet.MinY
+                        ? sheet.MaxY - sheet.MinY
+                        : DefaultCellSize;
 
-                if (sheet.Row < rowCount && h > rowMaxHeight[sheet.Row])
-                    rowMaxHeight[sheet.Row] = h;
+                if (sheet.Column >= 0 &&
+                    sheet.Column < columnCount)
+                {
+                    columnWidths[sheet.Column] =
+                        Math.Max(
+                            columnWidths[sheet.Column],
+                            width);
+                }
+
+                if (sheet.Row >= 0 &&
+                    sheet.Row < rowCount)
+                {
+                    rowHeights[sheet.Row] =
+                        Math.Max(
+                            rowHeights[sheet.Row],
+                            height);
+                }
             }
 
-            // Cumulative left-edge offset for each column.
-            var colOffset = new double[columnCount];
-            for (int c = 1; c < columnCount; c++)
-                colOffset[c] = colOffset[c - 1] + colMaxWidth[c - 1] + CellGap;
+            var columnOffsets =
+                new double[columnCount];
 
-            // Cumulative top-edge offset for each row (positive = downward in
-            // screen space; negated when applied to CAD Y, which increases upward).
-            var rowOffset = new double[rowCount];
-            for (int r = 1; r < rowCount; r++)
-                rowOffset[r] = rowOffset[r - 1] + rowMaxHeight[r - 1] + CellGap;
+            for (int i = 1;
+                 i < columnCount;
+                 i++)
+            {
+                columnOffsets[i] =
+                    columnOffsets[i - 1] +
+                    columnWidths[i - 1] +
+                    CellGap;
+            }
 
-            var masterDocument = new CadDocument();
-            int mergedCount = 0;
+            var rowOffsets =
+                new double[rowCount];
+
+            for (int i = 1;
+                 i < rowCount;
+                 i++)
+            {
+                rowOffsets[i] =
+                    rowOffsets[i - 1] +
+                    rowHeights[i - 1] +
+                    CellGap;
+            }
+
+            CadDocument masterDocument = null;
+
+            /*
+             * IMPORTANT:
+             *
+             * We keep the original entity list for the first
+             * document BEFORE removing anything from it.
+             */
+            List<Entity> firstMasterEntities = null;
+
+            var mergedCount = 0;
 
             foreach (var sheet in result.Sheets)
             {
                 if (!File.Exists(sheet.FilePath))
                 {
-                    result.MergeErrors.Add($"{sheet.FileName}: source file not found, skipped.");
+                    result.MergeErrors.Add(
+                        $"{sheet.FileName}: source file not found.");
+
                     continue;
                 }
 
                 try
                 {
-                    // Normalise sheet to its own CAD origin, then offset to grid position.
-                    // originX/originY are the sheet's own bottom-left / top-right in CAD space.
-                    double originX = sheet.Width > 0 ? sheet.MinX : 0.0;
-                    double originY = sheet.Height > 0 ? sheet.MaxY : 0.0;
+                    var sourceDocument =
+                        ReadCadDocument(
+                            sheet.FilePath,
+                            result.MergeErrors);
 
-                    // tx: move sheet's left edge to column left edge.
-                    // ty: move sheet's top edge to row top edge (negative because CAD Y is up).
-                    double tx = colOffset[sheet.Column] - originX;
-                    double ty = -rowOffset[sheet.Row] - originY;
-
-                    var translation = Transform.CreateTranslation(new XYZ(tx, ty, 0));
-
-                    var ext = Path.GetExtension(sheet.FilePath).ToLowerInvariant();
-                    var sourceDoc = ext == ".dxf"
-                        ? DxfReader.Read(sheet.FilePath)
-                        : DwgReader.Read(sheet.FilePath);
-
-                    foreach (var sourceEntity in sourceDoc.Entities.ToList())
+                    if (sourceDocument == null)
                     {
-                        var clone = (Entity)sourceEntity.Clone();
-                        clone.ApplyTransform(translation);
-                        masterDocument.Entities.Add(clone);
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: CAD document could not be read.");
+
+                        continue;
+                    }
+
+                    /*
+                     * Capture entities FIRST.
+                     *
+                     * This fixes the previous bug where the first
+                     * document was cleared before it was processed.
+                     */
+                    var sourceEntities =
+                        sourceDocument.Entities
+                            .ToList();
+
+                    if (sourceEntities.Count == 0)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: no model-space entities were read.");
+
+                        continue;
+                    }
+
+                    /*
+                     * First valid document becomes the master.
+                     *
+                     * Keep all its document tables:
+                     * layers, linetypes, blocks, styles, etc.
+                     */
+                    if (masterDocument == null)
+                    {
+                        masterDocument =
+                            sourceDocument;
+
+                        firstMasterEntities =
+                            sourceEntities;
+
+                        /*
+                         * Remove the original model-space entities
+                         * only AFTER capturing them.
+                         */
+                        foreach (var entity in
+                                 sourceEntities)
+                        {
+                            masterDocument.Entities.Remove(
+                                entity);
+                        }
+                    }
+
+                    var safeColumn =
+                        Math.Max(
+                            0,
+                            Math.Min(
+                                columnCount - 1,
+                                sheet.Column));
+
+                    var safeRow =
+                        Math.Max(
+                            0,
+                            Math.Min(
+                                rowCount - 1,
+                                sheet.Row));
+
+                    var targetX =
+                        columnOffsets[safeColumn];
+
+                    var targetY =
+                        -rowOffsets[safeRow];
+
+                    var translation =
+                        Transform.CreateTranslation(
+                            new XYZ(
+                                targetX - sheet.MinX,
+                                targetY - sheet.MaxY,
+                                0));
+
+                    /*
+                     * Flatten INSERT entities recursively.
+                     */
+                    var flattenedEntities =
+                        new List<Entity>();
+
+                    foreach (var sourceEntity
+                             in sourceEntities)
+                    {
+                        FlattenEntity(
+                            sourceEntity,
+                            flattenedEntities,
+                            result.MergeErrors,
+                            sheet.FileName);
+                    }
+
+                    if (flattenedEntities.Count == 0)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: no drawable entities remained after flattening.");
+
+                        continue;
+                    }
+
+                    foreach (var flattenedEntity
+                             in flattenedEntities)
+                    {
+                        try
+                        {
+                            Entity outputEntity;
+
+                            /*
+                             * First source belongs to masterDocument.
+                             *
+                             * Other source documents must be cloned.
+                             */
+                            if (ReferenceEquals(
+                                    sourceDocument,
+                                    masterDocument))
+                            {
+                                outputEntity =
+                                    flattenedEntity;
+                            }
+                            else
+                            {
+                                outputEntity =
+                                    (Entity)flattenedEntity.Clone();
+                            }
+
+                            outputEntity.ApplyTransform(
+                                translation);
+
+                            masterDocument.Entities.Add(
+                                outputEntity);
+                        }
+                        catch (Exception ex)
+                        {
+                            result.MergeErrors.Add(
+                                $"{sheet.FileName}: entity add failed — " +
+                                $"{ex.GetType().Name}: {ex.Message}");
+                        }
                     }
 
                     mergedCount++;
                 }
                 catch (Exception ex)
                 {
-                    result.MergeErrors.Add($"{sheet.FileName}: merge failed — {ex.Message}");
+                    result.MergeErrors.Add(
+                        $"{sheet.FileName}: merge failed — " +
+                        $"{ex.GetType().Name}: {ex.Message}");
+
+                    if (ex.InnerException != null)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: inner exception — " +
+                            $"{ex.InnerException.GetType().Name}: " +
+                            $"{ex.InnerException.Message}");
+                    }
                 }
+            }
+
+            if (masterDocument == null)
+            {
+                result.MergeErrors.Add(
+                    "No CAD document could be loaded.");
+
+                return Task.CompletedTask;
+            }
+
+            if (masterDocument.Entities.Count == 0)
+            {
+                result.MergeErrors.Add(
+                    "Merged master document contains zero model-space entities.");
+
+                return Task.CompletedTask;
             }
 
             if (mergedCount == 0)
             {
-                result.MergeErrors.Add("No sheets could be cloned into the master document.");
+                result.MergeErrors.Add(
+                    "No sheets were successfully merged.");
+
                 return Task.CompletedTask;
             }
 
-            Directory.CreateDirectory(outputDirectory);
-            var fileName = $"merged_{DateTime.UtcNow:yyyyMMdd_HHmmss}.dxf";
-            DxfWriter.Write(Path.Combine(outputDirectory, fileName), masterDocument);
-            result.MergeOutputFileName = fileName;
+            Directory.CreateDirectory(
+                outputDirectory);
+
+            var timestamp =
+                DateTime.UtcNow.ToString(
+                    "yyyyMMdd_HHmmssfff");
+
+            var dxfFileName =
+                $"merged_{timestamp}.dxf";
+
+            var dwgFileName =
+                $"merged_{timestamp}.dwg";
+
+            var dxfPath =
+                Path.Combine(
+                    outputDirectory,
+                    dxfFileName);
+
+            var dwgPath =
+                Path.Combine(
+                    outputDirectory,
+                    dwgFileName);
+
+            /*
+             * DXF
+             */
+            try
+            {
+                DxfWriter.Write(
+                    dxfPath,
+                    masterDocument);
+            }
+            catch (Exception ex)
+            {
+                result.MergeErrors.Add(
+                    $"DXF export failed — " +
+                    $"{ex.GetType().Name}: {ex.Message}");
+
+                if (ex.InnerException != null)
+                {
+                    result.MergeErrors.Add(
+                        $"DXF export inner exception — " +
+                        $"{ex.InnerException.GetType().Name}: " +
+                        $"{ex.InnerException.Message}");
+                }
+            }
+
+            /*
+             * DWG
+             */
+            try
+            {
+                DwgWriter.Write(
+                    dwgPath,
+                    masterDocument);
+            }
+            catch (Exception ex)
+            {
+                result.MergeErrors.Add(
+                    $"DWG export failed — " +
+                    $"{ex.GetType().Name}: {ex.Message}");
+
+                if (ex.InnerException != null)
+                {
+                    result.MergeErrors.Add(
+                        $"DWG export inner exception — " +
+                        $"{ex.InnerException.GetType().Name}: " +
+                        $"{ex.InnerException.Message}");
+                }
+            }
+
+            if (File.Exists(dxfPath))
+            {
+                result.MergeOutputFileName =
+                    dxfFileName;
+            }
+            else if (File.Exists(dwgPath))
+            {
+                result.MergeOutputFileName =
+                    dwgFileName;
+            }
+            else
+            {
+                result.MergeErrors.Add(
+                    "Neither DXF nor DWG output was created.");
+            }
 
             return Task.CompletedTask;
         }
 
-        // ── Private helpers ───────────────────────────────────────────────────
-
-        private static bool IsCadFile(string filePath)
+        private static void FlattenEntity(
+            Entity entity,
+            List<Entity> output,
+            List<string> errors,
+            string fileName)
         {
-            var ext = Path.GetExtension(filePath);
-            return string.Equals(ext, ".dwg", StringComparison.OrdinalIgnoreCase)
-                || string.Equals(ext, ".dxf", StringComparison.OrdinalIgnoreCase);
+            if (entity == null)
+                return;
+
+            /*
+             * INSERT:
+             *
+             * Resolve the referenced BlockRecord and recursively
+             * flatten its contents.
+             */
+            if (entity is Insert insert)
+            {
+                if (insert.Block == null)
+                {
+                    errors.Add(
+                        $"{fileName}: INSERT has no block reference.");
+
+                    return;
+                }
+
+                try
+                {
+                    /*
+                     * ACadSharp's Explode() already:
+                     *
+                     * - reads Insert.Block.Entities
+                     * - clones them
+                     * - applies the INSERT transform
+                     *
+                     * Nested INSERTs are then recursively flattened.
+                     */
+                    foreach (var explodedEntity
+                             in insert.Explode())
+                    {
+                        if (explodedEntity == null)
+                            continue;
+
+                        if (explodedEntity is Insert)
+                        {
+                            FlattenEntity(
+                                explodedEntity,
+                                output,
+                                errors,
+                                fileName);
+                        }
+                        else
+                        {
+                            output.Add(
+                                explodedEntity);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    errors.Add(
+                        $"{fileName}: INSERT '{insert.Block.Name}' " +
+                        $"could not be flattened — " +
+                        $"{ex.GetType().Name}: {ex.Message}");
+                }
+
+                return;
+            }
+
+            /*
+             * Normal model-space geometry.
+             */
+            output.Add(entity);
         }
 
-        private static int GetIndexNumber(string fileName)
+        private static CadDocument ReadCadDocument(
+            string file,
+            List<string> errors)
         {
-            var name = Path.GetFileNameWithoutExtension(fileName);
-            if (string.IsNullOrWhiteSpace(name)) return 0;
+            var extension =
+                Path.GetExtension(file)
+                    .ToLowerInvariant();
 
-            var match = Regex.Match(name, @"(\d+)$");
-            if (!match.Success) return 0;
+            void OnNotification(
+                object sender,
+                NotificationEventArgs args)
+            {
+                var message =
+                    $"[{args.NotificationType}] {args.Message}";
 
-            return int.TryParse(match.Groups[1].Value, out var index) ? index : 0;
+                if (args.Exception != null)
+                {
+                    message +=
+                        $" | {args.Exception.GetType().Name}: " +
+                        $"{args.Exception.Message}";
+                }
+
+                errors.Add(
+                    $"{Path.GetFileName(file)}: " +
+                    $"ACadSharp — {message}");
+            }
+
+            if (extension == ".dxf")
+            {
+                var configuration =
+                    new DxfReaderConfiguration
+                    {
+                        Failsafe = false
+                    };
+
+                return DxfReader.Read(
+                    file,
+                    configuration,
+                    OnNotification);
+            }
+
+            if (extension == ".dwg")
+            {
+                var configuration =
+                    new DwgReaderConfiguration
+                    {
+                        Failsafe = false
+                    };
+
+                return DwgReader.Read(
+                    file,
+                    configuration,
+                    OnNotification);
+            }
+
+            throw new NotSupportedException(
+                $"Unsupported CAD file type: {extension}");
         }
 
-        // Resets IndexNumber to 0 for any sheet whose number was already claimed
-        // by an earlier sheet in the list. AssignMissingIndexes will then give the
-        // duplicate a fresh, non-colliding slot.
-        private static void DeduplicateIndexes(List<CadSheetGridItem> sheets)
+        private static bool IsCadFile(
+            string filePath)
         {
-            var seen = new HashSet<int>();
+            var extension =
+                Path.GetExtension(filePath);
+
+            return string.Equals(
+                       extension,
+                       ".dwg",
+                       StringComparison.OrdinalIgnoreCase)
+                   ||
+                   string.Equals(
+                       extension,
+                       ".dxf",
+                       StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static int GetIndexNumber(
+            string fileName)
+        {
+            var name =
+                Path.GetFileNameWithoutExtension(
+                    fileName);
+
+            if (string.IsNullOrWhiteSpace(name))
+                return 0;
+
+            var match =
+                Regex.Match(
+                    name,
+                    @"(\d+)$");
+
+            if (!match.Success)
+                return 0;
+
+            return int.TryParse(
+                match.Groups[1].Value,
+                out var index)
+                ? index
+                : 0;
+        }
+
+        private static void DeduplicateIndexes(
+            List<CadSheetGridItem> sheets)
+        {
+            var seen =
+                new HashSet<int>();
 
             foreach (var sheet in sheets)
             {
-                if (sheet.IndexNumber > 0 && !seen.Add(sheet.IndexNumber))
+                if (sheet.IndexNumber > 0 &&
+                    !seen.Add(sheet.IndexNumber))
+                {
                     sheet.IndexNumber = 0;
+                }
             }
         }
 
-        private static void AssignMissingIndexes(List<CadSheetGridItem> sheets)
+        private static void AssignMissingIndexes(
+            List<CadSheetGridItem> sheets)
         {
-            var usedIndexes = sheets
-                .Where(x => x.IndexNumber > 0)
-                .Select(x => x.IndexNumber)
-                .ToHashSet();
+            var usedIndexes =
+                sheets
+                    .Where(x => x.IndexNumber > 0)
+                    .Select(x => x.IndexNumber)
+                    .ToHashSet();
 
-            int nextIndex = 1;
+            var nextIndex = 1;
 
             foreach (var sheet in sheets)
             {
-                if (sheet.IndexNumber > 0) continue;
+                if (sheet.IndexNumber > 0)
+                    continue;
 
-                while (usedIndexes.Contains(nextIndex))
+                while (usedIndexes.Contains(
+                           nextIndex))
+                {
                     nextIndex++;
+                }
 
-                sheet.IndexNumber = nextIndex;
-                usedIndexes.Add(nextIndex);
+                sheet.IndexNumber =
+                    nextIndex;
+
+                usedIndexes.Add(
+                    nextIndex);
+
                 nextIndex++;
             }
         }
 
-        private static int CalculateColumnCount(int sheetCount)
+        private static int CalculateColumnCount(
+            int sheetCount)
         {
-            if (sheetCount <= 0) return 1;
-            return Math.Max(1, (int)Math.Ceiling(Math.Sqrt(sheetCount)));
+            if (sheetCount <= 0)
+                return 1;
+
+            return Math.Max(
+                1,
+                (int)Math.Ceiling(
+                    Math.Sqrt(sheetCount)));
         }
     }
 }
