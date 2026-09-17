@@ -13,6 +13,22 @@ namespace MapStitcher.Business.Services
         private const string HatchLayer = "Sym_Hatch";
         private const string TitleLayer = "Sym_Title";
 
+        // Width/height of the genuine title-box Sym_Hatch symbol is
+        // consistently ~0.49 across every sheet where detection is known
+        // to work correctly. When more than one HATCH entity shares the
+        // Sym_Hatch layer (stray fill patterns, page borders, etc.), the
+        // candidate whose own aspect ratio is closest to this value is the
+        // real title box; the others are noise and must not be merged in.
+        private const double ExpectedHatchAspectRatio = 0.4926;
+
+        // Every genuine title-box hatch across the known-good sheets has
+        // deviated from ExpectedHatchAspectRatio by at most ~0.32; the
+        // unrelated stamp/logo hatch present in every file deviates by
+        // ~1.22. This sits comfortably between the two, so a candidate
+        // whose closest aspect still exceeds it is not the title box —
+        // even if it is the only candidate found.
+        private const double MaxAspectDeviation = 0.6;
+
         // Guards against a malformed/self-referencing block chain.
         private const int MaxBlockDepth = 8;
 
@@ -64,17 +80,15 @@ namespace MapStitcher.Business.Services
 
             /*
              * ---------------------------------------------------------
-             * 1. Find the spatial/index-map area from Sym_Hatch
+             * 1. Locate the Sym_Hatch title-box (if present) — used only
+             *    as a positional anchor for "self", never as a spatial
+             *    containment filter. Neighbour numbers on real drawings
+             *    routinely sit well outside this box.
              * ---------------------------------------------------------
              */
 
-            double minX = double.MaxValue;
-            double minY = double.MaxValue;
-            double maxX = double.MinValue;
-            double maxY = double.MinValue;
-
-            int boundsPointCount = 0;
-            bool usedHatch = true;
+            var hatchCandidates =
+                new List<(double MinX, double MinY, double MaxX, double MaxY)>();
 
             foreach (var (entity, ctx) in flattened)
             {
@@ -86,10 +100,9 @@ namespace MapStitcher.Business.Services
 
                 var bounds = hatch.GetBoundingBox();
 
-                // GetBoundingBox() is in the hatch's own local coordinate
-                // system, so all four corners must go through the transform
-                // (rotation can tilt an axis-aligned local box) — not just
-                // its Min/Max corners.
+                double cMinX = double.MaxValue, cMinY = double.MaxValue;
+                double cMaxX = double.MinValue, cMaxY = double.MinValue;
+
                 foreach (var (cx, cy) in new[]
                 {
                     (bounds.Min.X, bounds.Min.Y),
@@ -99,142 +112,89 @@ namespace MapStitcher.Business.Services
                 })
                 {
                     var (wx, wy) = ctx.ToWorld(cx, cy);
-                    minX = Math.Min(minX, wx);
-                    minY = Math.Min(minY, wy);
-                    maxX = Math.Max(maxX, wx);
-                    maxY = Math.Max(maxY, wy);
+                    cMinX = Math.Min(cMinX, wx);
+                    cMinY = Math.Min(cMinY, wy);
+                    cMaxX = Math.Max(cMaxX, wx);
+                    cMaxY = Math.Max(cMaxY, wy);
                 }
 
-                boundsPointCount++;
+                hatchCandidates.Add((cMinX, cMinY, cMaxX, cMaxY));
             }
 
-            if (boundsPointCount == 0)
+            (double X, double Y)? hatchCenter = null;
+
+            if (hatchCandidates.Count > 0)
             {
-                // Fallback: some sheets draw the index-box outline as a
-                // polyline or plain lines on Sym_Hatch instead of a HATCH
-                // fill. Use their vertices/endpoints for the same bounding
-                // box instead of giving up on the sheet entirely.
-                usedHatch = false;
-
-                foreach (var (entity, ctx) in flattened)
+                if (hatchCandidates.Count > 1)
                 {
-                    if (!LayerMatches(entity, HatchLayer))
-                        continue;
-
-                    switch (entity)
+                    foreach (var c in hatchCandidates)
                     {
-                        case LwPolyline lwPoly:
-                            foreach (var v in lwPoly.Vertices)
-                            {
-                                var (wx, wy) = ctx.ToWorld(v.Location.X, v.Location.Y);
-                                minX = Math.Min(minX, wx);
-                                minY = Math.Min(minY, wy);
-                                maxX = Math.Max(maxX, wx);
-                                maxY = Math.Max(maxY, wy);
-                                boundsPointCount++;
-                            }
-                            break;
+                        double cw = c.MaxX - c.MinX;
+                        double ch = c.MaxY - c.MinY;
+                        double aspect = ch > 0 ? cw / ch : double.NaN;
 
-                        case Polyline2D poly2d:
-                            foreach (var v in poly2d.Vertices)
-                            {
-                                var (wx, wy) = ctx.ToWorld(v.Location.X, v.Location.Y);
-                                minX = Math.Min(minX, wx);
-                                minY = Math.Min(minY, wy);
-                                maxX = Math.Max(maxX, wx);
-                                maxY = Math.Max(maxY, wy);
-                                boundsPointCount++;
-                            }
-                            break;
-
-                        case Line line:
-                            foreach (var (lx, ly) in new[]
-                            {
-                                (line.StartPoint.X, line.StartPoint.Y),
-                                (line.EndPoint.X, line.EndPoint.Y)
-                            })
-                            {
-                                var (wx, wy) = ctx.ToWorld(lx, ly);
-                                minX = Math.Min(minX, wx);
-                                minY = Math.Min(minY, wy);
-                                maxX = Math.Max(maxX, wx);
-                                maxY = Math.Max(maxY, wy);
-                                boundsPointCount++;
-                            }
-                            break;
+                        result.Warnings.Add(
+                            $"[DIAG] Sym_Hatch candidate: X[{c.MinX:F2}..{c.MaxX:F2}] " +
+                            $"Y[{c.MinY:F2}..{c.MaxY:F2}] size={cw:F2}x{ch:F2} " +
+                            $"aspect={aspect:F4}");
                     }
                 }
-            }
 
-            if (boundsPointCount == 0)
+                var best =
+                    hatchCandidates
+                        .OrderBy(c =>
+                        {
+                            double cw = c.MaxX - c.MinX;
+                            double ch = c.MaxY - c.MinY;
+                            double aspect = ch > 0 ? cw / ch : double.MaxValue;
+                            return Math.Abs(aspect - ExpectedHatchAspectRatio);
+                        })
+                        .First();
+
+                double bestW = best.MaxX - best.MinX;
+                double bestH = best.MaxY - best.MinY;
+                double bestAspect = bestH > 0 ? bestW / bestH : double.MaxValue;
+                double bestDeviation = Math.Abs(bestAspect - ExpectedHatchAspectRatio);
+
+                if (bestDeviation <= MaxAspectDeviation)
+                {
+                    hatchCenter = ((best.MinX + best.MaxX) / 2.0, (best.MinY + best.MaxY) / 2.0);
+
+                    result.Warnings.Add(
+                        $"[DIAG] Sym_Hatch anchor: {hatchCandidates.Count} candidate(s); " +
+                        $"using center ({hatchCenter.Value.X:F2},{hatchCenter.Value.Y:F2}) " +
+                        "as self-number anchor only (not a containment filter).");
+                }
+                else
+                {
+                    result.Warnings.Add(
+                        $"[DIAG] Sym_Hatch: closest candidate aspect={bestAspect:F4} " +
+                        $"deviates {bestDeviation:F4} from expected {ExpectedHatchAspectRatio:F4} " +
+                        $"(> {MaxAspectDeviation:F4} tolerance) — no genuine title-box hatch on " +
+                        "this sheet; falling back to 'N)' self-label token.");
+                }
+            }
+            else
             {
                 result.Warnings.Add(
-                    $"No HATCH, LWPOLYLINE, POLYLINE, or LINE geometry found on layer '{HatchLayer}' " +
-                    "(checked model space and block inserts).");
-
-                return Task.FromResult(result);
-            }
-
-            if (minX == double.MaxValue ||
-                minY == double.MaxValue ||
-                maxX == double.MinValue ||
-                maxY == double.MinValue)
-            {
-                result.Warnings.Add(
-                    $"Unable to calculate bounding box for layer '{HatchLayer}'.");
-
-                return Task.FromResult(result);
-            }
-
-            double width = maxX - minX;
-            double height = maxY - minY;
-
-            if (width <= 0 || height <= 0)
-            {
-                result.Warnings.Add(
-                    "Sym_Hatch spatial area has zero width or height.");
-
-                return Task.FromResult(result);
-            }
-
-            if (!usedHatch)
-            {
-                result.Warnings.Add(
-                    $"No HATCH found on layer '{HatchLayer}'; bounding box derived from " +
-                    "polyline/line geometry on that layer instead.");
+                    $"No HATCH found on layer '{HatchLayer}'; self number will be read " +
+                    "from the 'N)' sheet-label token on Sym_Title instead, and neighbour " +
+                    "detection will be skipped for this sheet.");
             }
 
             /*
              * ---------------------------------------------------------
-             * 2. Divide the spatial area into a 3 x 3 grid
+             * 2. Read every Sym_Title TEXT/MTEXT entity, in world space,
+             *    with no spatial filtering at all.
              * ---------------------------------------------------------
              */
 
-            double thirdWidth = width / 3.0;
-            double thirdHeight = height / 3.0;
-
-            var cellTexts = new Dictionary<string, List<string>>
-            {
-                ["Center"] = new(),
-                ["Top"] = new(),
-                ["Bottom"] = new(),
-                ["Left"] = new(),
-                ["Right"] = new(),
-                ["CenterFallback"] = new()
-            };
-
-            /*
-             * ---------------------------------------------------------
-             * 3. Read sheet numbers from Sym_Title
-             * ---------------------------------------------------------
-             */
-
-            result.Warnings.Add(
-                $"[DIAG] Sym_Hatch bounds ({(usedHatch ? "HATCH" : "polyline/line fallback")}): " +
-                $"X[{minX:F2}..{maxX:F2}] Y[{minY:F2}..{maxY:F2}]  " +
-                $"(thirdWidth={thirdWidth:F2}, thirdHeight={thirdHeight:F2})");
+            var plainNumeric = new List<(string Value, double X, double Y)>();
+            (string Value, double X, double Y)? parenSelf = null;
 
             int titleEntityCount = 0;
+            var plainNumericRegex = new Regex(@"^\d+$", RegexOptions.Compiled);
+            var parenNumericRegex = new Regex(@"^(\d+)\)$", RegexOptions.Compiled);
 
             foreach (var (entity, ctx) in flattened)
             {
@@ -266,7 +226,6 @@ namespace MapStitcher.Business.Services
                 titleEntityCount++;
 
                 var cleaned = Sanitize(rawText);
-
                 var (x, y) = ctx.ToWorld(localX, localY);
 
                 if (cleaned == null)
@@ -277,58 +236,32 @@ namespace MapStitcher.Business.Services
                     continue;
                 }
 
-                /*
-                 * Ignore titles outside the Sym_Hatch spatial area.
-                 */
-                if (x < minX ||
-                    x > maxX ||
-                    y < minY ||
-                    y > maxY)
+                if (plainNumericRegex.IsMatch(cleaned))
                 {
+                    plainNumeric.Add((cleaned, x, y));
                     result.Warnings.Add(
-                        $"[DIAG] Sym_Title text='{cleaned}' at ({x:F2},{y:F2}) — " +
-                        $"OUTSIDE Sym_Hatch bounds X[{minX:F2}..{maxX:F2}] Y[{minY:F2}..{maxY:F2}].");
+                        $"[DIAG] Sym_Title text='{cleaned}' at ({x:F2},{y:F2}) — numeric candidate.");
                     continue;
                 }
 
-                int column =
-                    ClampThird(
-                        (x - minX) / thirdWidth);
-
-                int row =
-                    ClampThird(
-                        (y - minY) / thirdHeight);
-
-                string? cell = (row, column) switch
+                var parenMatch = parenNumericRegex.Match(cleaned);
+                if (parenMatch.Success)
                 {
-                    (1, 1) => "Center",
+                    // The sheet's own "शीट क्र (N)" self-declaration label.
+                    // Kept only as a fallback self anchor (see below) — not
+                    // fully trusted as primary, since this token is
+                    // occasionally corrupted in the source drawing.
+                    parenSelf ??= (parenMatch.Groups[1].Value, x, y);
 
-                    // CAD coordinates: Y increases upward.
-                    (2, 1) => "Top",
-
-                    (0, 1) => "Bottom",
-
-                    (1, 0) => "Left",
-
-                    (1, 2) => "Right",
-
-                    // Observed authoring pattern: the sheet's own number is
-                    // stamped in the bottom-right third (row=0,col=2), directly
-                    // below the east-neighbour number at (row=1,col=2), instead
-                    // of the geometric centre (1,1). Captured separately and
-                    // only used if the canonical Center cell is empty, so it
-                    // never overrides a genuine (1,1) match.
-                    (0, 2) => "CenterFallback",
-
-                    _ => null
-                };
+                    result.Warnings.Add(
+                        $"[DIAG] Sym_Title text='{cleaned}' at ({x:F2},{y:F2}) — " +
+                        "self-label token ('N)').");
+                    continue;
+                }
 
                 result.Warnings.Add(
-                    $"[DIAG] Sym_Title text='{cleaned}' at ({x:F2},{y:F2}) → row={row},col={column} → " +
-                    $"cell={cell ?? "(none — not plus-shaped position)"}");
-
-                if (cell != null)
-                    cellTexts[cell].Add(cleaned);
+                    $"[DIAG] Sym_Title raw='{rawText}' at ({x:F2},{y:F2}) — " +
+                    $"cleaned='{cleaned}' ignored (not a bare number or 'N)' label).");
             }
 
             result.Warnings.Add(
@@ -336,49 +269,104 @@ namespace MapStitcher.Business.Services
 
             /*
              * ---------------------------------------------------------
-             * 4. Resolve sheet numbers
+             * 3. Resolve "self": nearest plain-numeric candidate to the
+             *    Sym_Hatch anchor when a hatch was found; otherwise fall
+             *    back to the 'N)' self-label token.
              * ---------------------------------------------------------
              */
 
-            result.CenterSheetNumber =
-                Pick(
-                    cellTexts["Center"],
-                    "Center",
-                    result.Warnings)
-                ?? Pick(
-                    cellTexts["CenterFallback"],
-                    "CenterFallback",
-                    result.Warnings);
+            (string Value, double X, double Y)? self = null;
 
-            result.TopSheetNumber =
-                Pick(
-                    cellTexts["Top"],
-                    "Top",
-                    result.Warnings);
+            if (hatchCenter != null && plainNumeric.Count > 0)
+            {
+                self =
+                    plainNumeric
+                        .OrderBy(c => Distance(c.X, c.Y, hatchCenter.Value.X, hatchCenter.Value.Y))
+                        .Select(c => ((string Value, double X, double Y)?)c)
+                        .First();
 
-            result.BottomSheetNumber =
-                Pick(
-                    cellTexts["Bottom"],
-                    "Bottom",
-                    result.Warnings);
+                result.Warnings.Add(
+                    $"[DIAG] Self resolved from nearest-to-hatch-center: " +
+                    $"'{self.Value.Value}' at ({self.Value.X:F2},{self.Value.Y:F2}).");
+            }
+            else if (parenSelf != null)
+            {
+                self = parenSelf;
 
-            result.LeftSheetNumber =
-                Pick(
-                    cellTexts["Left"],
-                    "Left",
-                    result.Warnings);
+                result.Warnings.Add(
+                    $"[DIAG] Self resolved from 'N)' label fallback (no usable hatch anchor): " +
+                    $"'{self.Value.Value}' at ({self.Value.X:F2},{self.Value.Y:F2}).");
+            }
 
-            result.RightSheetNumber =
-                Pick(
-                    cellTexts["Right"],
-                    "Right",
-                    result.Warnings);
+            result.CenterSheetNumber = self?.Value;
 
             if (result.CenterSheetNumber == null)
             {
                 result.Warnings.Add(
-                    $"No sheet number found in Center cell on layer '{TitleLayer}' " +
+                    $"No sheet number found on layer '{TitleLayer}' " +
                     "(checked model space and block inserts).");
+            }
+
+            /*
+             * ---------------------------------------------------------
+             * 4. Resolve neighbours by displacement direction from self,
+             *    not by containment in any bounding box. Skipped entirely
+             *    when self came from the 'N)' fallback, since that anchor
+             *    has no reliable spatial relationship to any neighbour
+             *    cluster on the sheet.
+             * ---------------------------------------------------------
+             */
+
+            if (self != null && hatchCenter != null)
+            {
+                var directional =
+                    new Dictionary<string, List<(string Text, double X, double Y)>>
+                    {
+                        ["Top"] = new(),
+                        ["Bottom"] = new(),
+                        ["Left"] = new(),
+                        ["Right"] = new()
+                    };
+
+                foreach (var candidate in plainNumeric)
+                {
+                    if (candidate.X == self.Value.X && candidate.Y == self.Value.Y)
+                        continue;
+
+                    double dx = candidate.X - self.Value.X;
+                    double dy = candidate.Y - self.Value.Y;
+
+                    // Dominant axis decides North/South vs East/West;
+                    // CAD coordinates: Y increases upward.
+                    string direction =
+                        Math.Abs(dy) >= Math.Abs(dx)
+                            ? (dy > 0 ? "Top" : "Bottom")
+                            : (dx > 0 ? "Right" : "Left");
+
+                    directional[direction].Add((candidate.Value, candidate.X, candidate.Y));
+
+                    result.Warnings.Add(
+                        $"[DIAG] Sym_Title text='{candidate.Value}' at " +
+                        $"({candidate.X:F2},{candidate.Y:F2}) → dx={dx:F2},dy={dy:F2} → {direction}.");
+                }
+
+                result.TopSheetNumber =
+                    PickNearest(directional["Top"], "Top", self.Value.X, self.Value.Y, result.Warnings);
+
+                result.BottomSheetNumber =
+                    PickNearest(directional["Bottom"], "Bottom", self.Value.X, self.Value.Y, result.Warnings);
+
+                result.LeftSheetNumber =
+                    PickNearest(directional["Left"], "Left", self.Value.X, self.Value.Y, result.Warnings);
+
+                result.RightSheetNumber =
+                    PickNearest(directional["Right"], "Right", self.Value.X, self.Value.Y, result.Warnings);
+            }
+            else
+            {
+                result.Warnings.Add(
+                    "[DIAG] Neighbour detection skipped: no Sym_Hatch anchor available " +
+                    "for this sheet.");
             }
 
             return Task.FromResult(result);
@@ -533,38 +521,43 @@ namespace MapStitcher.Business.Services
             }
         }
 
-        private static int ClampThird(double ratio)
-        {
-            if (ratio < 1.0 / 3.0)
-                return 0;
-
-            if (ratio < 2.0 / 3.0)
-                return 1;
-
-            return 2;
-        }
-
-        private static string? Pick(
-            List<string> candidates,
-            string cellName,
+        private static string? PickNearest(
+            List<(string Text, double X, double Y)> candidates,
+            string direction,
+            double selfX,
+            double selfY,
             List<string> warnings)
         {
             if (candidates.Count == 0)
                 return null;
 
-            var distinct =
+            var ordered =
                 candidates
+                    .OrderBy(c => Distance(c.X, c.Y, selfX, selfY))
+                    .ToList();
+
+            var distinctTexts =
+                ordered
+                    .Select(c => c.Text)
                     .Distinct(StringComparer.OrdinalIgnoreCase)
                     .ToList();
 
-            if (distinct.Count > 1)
+            if (distinctTexts.Count > 1)
             {
                 warnings.Add(
-                    $"{cellName} cell has conflicting labels: " +
-                    $"{string.Join(", ", distinct)}. Using first.");
+                    $"{direction} direction has conflicting labels: " +
+                    $"{string.Join(", ", distinctTexts)}. " +
+                    $"Using '{ordered[0].Text}' (nearest to self).");
             }
 
-            return distinct[0];
+            return ordered[0].Text;
+        }
+
+        private static double Distance(double x1, double y1, double x2, double y2)
+        {
+            double dx = x1 - x2;
+            double dy = y1 - y2;
+            return Math.Sqrt(dx * dx + dy * dy);
         }
 
         private static string? Sanitize(string? raw)
