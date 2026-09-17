@@ -1,20 +1,20 @@
 ﻿// MapStitcher.Business/Services/SheetArrangementOrchestrator.cs
+
 using ACadSharp;
 using ACadSharp.Entities;
 using ACadSharp.IO;
 using ACadSharp.Tables;
-using System;
-using System.Linq;
 using MapStitcher.Business.Contracts;
 using MapStitcher.Model;
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 
 namespace MapStitcher.Business.Services
 {
     public class SheetArrangementOrchestrator : ISheetArrangementOrchestrator
     {
-        // Temp upload files are named "{32-char-hex-guid}__{originalName}.ext"
-        // by CadGridController so uploads never collide on disk while the
-        // user-facing name is still recoverable for display.
         private static string ExtractDisplayFileName(string filePath)
         {
             var fileName = Path.GetFileName(filePath);
@@ -29,7 +29,6 @@ namespace MapStitcher.Business.Services
 
             return fileName;
         }
-
 
         private readonly IIndexMapExtractionService _indexMapService;
         private readonly ITopologyGridService _topologyService;
@@ -53,641 +52,697 @@ namespace MapStitcher.Business.Services
             return ArrangeAsync(directoryPath, null);
         }
 
-        public async Task<CadSheetGridResult> ArrangeAsync(string directoryPath, string? outputRootPath)
+        public async Task<CadSheetGridResult> ArrangeAsync(
+            string directoryPath,
+            string? outputRootPath)
         {
             var result = new CadSheetGridResult();
 
             var files = Directory
-                .GetFiles(directoryPath, "*.*", SearchOption.TopDirectoryOnly)
-                .Where(f => f.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase)
-                         || f.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase))
+                .GetFiles(
+                    directoryPath,
+                    "*.*",
+                    SearchOption.TopDirectoryOnly)
+                .Where(f =>
+                    f.EndsWith(".dwg", StringComparison.OrdinalIgnoreCase) ||
+                    f.EndsWith(".dxf", StringComparison.OrdinalIgnoreCase))
                 .ToList();
 
-            if (files.Count == 0) return result;
+            if (files.Count == 0)
+                return result;
 
-            var topologyInputs = new List<SheetTopologyInput>();
-            var neatlinesBySheetId = new Dictionary<string, NeatlineExtent>();
-            var inspectionsBySheetId = new Dictionary<string, CadCoordinateInspectionResult>();
-            var boundaryPolygonsBySheetId = new Dictionary<string, List<List<(double X, double Y)>>>();
-            // Cache each parsed document from the extraction pass below so the
-            // export/stitch step reuses it instead of re-reading the DWG/DXF a
-            // second time. Re-reading a DWG a second call into DwgReader.Read
-            // has been observed to throw ArgumentNullException inside
-            // ACadSharp for files that parsed fine the first time — reusing
-            // the already-parsed CadDocument avoids that failure mode too.
-            var docsBySheetId = new Dictionary<string, CadDocument>();
-            // Raw entity bounds: used as a 3rd fallback when neatline layer is
-            // absent AND inspection yields zero-size extents. Computed from every
-            // geometric entity in the document so the stitch always has a valid
-            // bounding box even on files that have no Poly_Survey_Bndry layer.
-            var rawBoundsByFile = new Dictionary<string, (double minX, double minY, double maxX, double maxY)?>();
+            var topologyInputs =
+                new List<SheetTopologyInput>();
+
+            var neatlinesBySheetId =
+                new Dictionary<string, NeatlineExtent>();
+
+            var inspectionsBySheetId =
+                new Dictionary<string, CadCoordinateInspectionResult>();
+
+            var boundaryPolygonsBySheetId =
+                new Dictionary<
+                    string,
+                    List<List<(double X, double Y)>>>();
+
+            var docsBySheetId =
+                new Dictionary<string, CadDocument>();
+
+            var rawBoundsByFile =
+                new Dictionary<
+                    string,
+                    (double minX, double minY, double maxX, double maxY)?>();
 
             foreach (var file in files)
             {
                 try
                 {
-                    var neighbors = await _indexMapService.ExtractAsync(file, IndexMapLayerConfig.IndexGridLayer);
+                    var neighbors =
+                        await _indexMapService.ExtractAsync(
+                            file,
+                            IndexMapLayerConfig.IndexGridLayer);
 
                     try
                     {
                         inspectionsBySheetId[file] =
-                            await _inspectionService.InspectFileAsync(file, Path.GetFileName(file));
+                            await _inspectionService.InspectFileAsync(
+                                file,
+                                Path.GetFileName(file));
                     }
                     catch (Exception ex)
                     {
-                        result.MergeErrors.Add($"{Path.GetFileName(file)}: Laghu reference scan failed — {ex.Message}");
+                        result.MergeErrors.Add(
+                            $"{Path.GetFileName(file)}: " +
+                            $"Laghu reference scan failed — {ex.Message}");
                     }
 
-                    // Do NOT skip/continue here. TopologyGridService now places
-                    // a sheet with no centre number as its own standalone
-                    // component instead of excluding it — but only if it
-                    // actually receives the sheet. Passing null through lets
-                    // that handling work; filtering it out here bypasses it
-                    // entirely and also skips the neatline extraction below.
-                    var centerNumber = neighbors.CenterSheetNumber;
+                    topologyInputs.Add(
+                        new SheetTopologyInput
+                        {
+                            SheetId = file,
+                            CenterSheetNumber =
+                                neighbors.CenterSheetNumber,
 
-                    topologyInputs.Add(new SheetTopologyInput
+                            TopSheetNumber =
+                                neighbors.TopSheetNumber,
+
+                            BottomSheetNumber =
+                                neighbors.BottomSheetNumber,
+
+                            LeftSheetNumber =
+                                neighbors.LeftSheetNumber,
+
+                            RightSheetNumber =
+                                neighbors.RightSheetNumber
+                        });
+
+                    foreach (var warning in neighbors.Warnings)
                     {
-                        SheetId = file,
-                        CenterSheetNumber = centerNumber,
-                        TopSheetNumber = neighbors.TopSheetNumber,
-                        BottomSheetNumber = neighbors.BottomSheetNumber,
-                        LeftSheetNumber = neighbors.LeftSheetNumber,
-                        RightSheetNumber = neighbors.RightSheetNumber
-                    });
+                        result.MergeErrors.Add(
+                            $"{Path.GetFileName(file)}: {warning}");
+                    }
 
-                    foreach (var w in neighbors.Warnings)
-                        result.MergeErrors.Add($"{Path.GetFileName(file)}: {w}");
+                    var doc =
+                        ReadCadDocument(
+                            file,
+                            result.MergeErrors);
 
-                    var ext = Path.GetExtension(file).ToLowerInvariant();
-                    var doc = ext == ".dxf" ? DxfReader.Read(file) : DwgReader.Read(file);
                     docsBySheetId[file] = doc;
-                    var neatline = _neatlineService.Extract(doc, IndexMapLayerConfig.NeatlineLayer);
+
+                    var neatline =
+                        _neatlineService.Extract(
+                            doc,
+                            IndexMapLayerConfig.NeatlineLayer);
 
                     if (!neatline.IsValid)
-                        result.MergeErrors.Add($"{Path.GetFileName(file)}: no valid neatline on layer '{IndexMapLayerConfig.NeatlineLayer}', size unknown.");
+                    {
+                        result.MergeErrors.Add(
+                            $"{Path.GetFileName(file)}: " +
+                            $"no valid neatline on layer " +
+                            $"'{IndexMapLayerConfig.NeatlineLayer}', " +
+                            "size unknown.");
+                    }
 
-                    neatlinesBySheetId[file] = neatline;
+                    neatlinesBySheetId[file] =
+                        neatline;
 
-                    // Raw entity bounds: pre-compute now while the doc is in memory.
-                    // Used as a 3rd fallback in the Select lambda below.
-                    rawBoundsByFile[file] = ComputeRawEntityBounds(doc);
+                    rawBoundsByFile[file] =
+                        ComputeRawEntityBounds(doc);
 
-                    // Extract actual polygon shapes from Poly_Survey_Bndry for Geometry Grid rendering.
-                    boundaryPolygonsBySheetId[file] = ExtractBoundaryPolygons(doc, IndexMapLayerConfig.NeatlineLayer);
+                    boundaryPolygonsBySheetId[file] =
+                        ExtractBoundaryPolygons(
+                            doc,
+                            IndexMapLayerConfig.NeatlineLayer);
                 }
                 catch (Exception ex)
                 {
-                    result.MergeErrors.Add($"{Path.GetFileName(file)}: extraction failed — {ex.Message}");
+                    result.MergeErrors.Add(
+                        $"{Path.GetFileName(file)}: " +
+                        $"extraction failed — " +
+                        $"{ex.GetType().Name}: {ex.Message}");
+
+                    if (ex.InnerException != null)
+                    {
+                        result.MergeErrors.Add(
+                            $"{Path.GetFileName(file)}: " +
+                            $"inner exception — " +
+                            $"{ex.InnerException.GetType().Name}: " +
+                            $"{ex.InnerException.Message}");
+                    }
                 }
             }
 
-            var topology = _topologyService.BuildGrid(topologyInputs);
-            result.MergeErrors.AddRange(topology.Anomalies);
+            var topology =
+                _topologyService.BuildGrid(
+                    topologyInputs);
 
-            var placedSheets = topology.Sheets.Where(t => t.Placed).ToList();
+            result.MergeErrors.AddRange(
+                topology.Anomalies);
+
+            var placedSheets =
+                topology.Sheets
+                    .Where(t => t.Placed)
+                    .ToList();
 
             if (placedSheets.Count == 0)
             {
-                result.MergeErrors.Add("No sheets could be topologically placed from index-map neighbor data.");
+                result.MergeErrors.Add(
+                    "No sheets could be topologically placed " +
+                    "from index-map neighbor data.");
+
                 return result;
             }
 
-            // Bounds must span both real placed sheets and any blank boxes for
-            // referenced-but-not-uploaded neighbours, so a missing sheet at the
-            // grid's edge still gets its own row/column instead of being clipped.
-            int minGx = Math.Min(
-                placedSheets.Min(t => t.GridX),
-                topology.MissingSlots.Count > 0 ? topology.MissingSlots.Min(m => m.GridX) : int.MaxValue);
+            int minGx =
+                Math.Min(
+                    placedSheets.Min(t => t.GridX),
+                    topology.MissingSlots.Count > 0
+                        ? topology.MissingSlots.Min(m => m.GridX)
+                        : int.MaxValue);
 
-            int minGy = Math.Min(
-                placedSheets.Min(t => t.GridY),
-                topology.MissingSlots.Count > 0 ? topology.MissingSlots.Min(m => m.GridY) : int.MaxValue);
+            int minGy =
+                Math.Min(
+                    placedSheets.Min(t => t.GridY),
+                    topology.MissingSlots.Count > 0
+                        ? topology.MissingSlots.Min(m => m.GridY)
+                        : int.MaxValue);
 
-            int maxGy = Math.Max(
-                placedSheets.Max(t => t.GridY),
-                topology.MissingSlots.Count > 0 ? topology.MissingSlots.Max(m => m.GridY) : int.MinValue);
+            int maxGy =
+                Math.Max(
+                    placedSheets.Max(t => t.GridY),
+                    topology.MissingSlots.Count > 0
+                        ? topology.MissingSlots.Max(m => m.GridY)
+                        : int.MinValue);
 
-            result.Sheets = placedSheets.Select(t =>
+            result.Sheets =
+                placedSheets
+                    .Select(t =>
+                    {
+                        var neatline =
+                            neatlinesBySheetId.TryGetValue(
+                                t.SheetId,
+                                out var n)
+                                ? n
+                                : new NeatlineExtent();
+
+                        var inspection =
+                            inspectionsBySheetId.TryGetValue(
+                                t.SheetId,
+                                out var insp)
+                                ? insp
+                                : null;
+
+                        double minX;
+                        double minY;
+                        double maxX;
+                        double maxY;
+
+                        if (neatline.IsValid)
+                        {
+                            minX = neatline.MinX;
+                            minY = neatline.MinY;
+                            maxX = neatline.MaxX;
+                            maxY = neatline.MaxY;
+                        }
+                        else if (
+                            inspection != null &&
+                            inspection.MaxX -
+                                inspection.MinX > 0 &&
+                            inspection.MaxY -
+                                inspection.MinY > 0)
+                        {
+                            minX = inspection.MinX;
+                            minY = inspection.MinY;
+                            maxX = inspection.MaxX;
+                            maxY = inspection.MaxY;
+                        }
+                        else if (
+                            rawBoundsByFile.TryGetValue(
+                                t.SheetId,
+                                out var rb) &&
+                            rb.HasValue &&
+                            rb.Value.maxX -
+                                rb.Value.minX > 0 &&
+                            rb.Value.maxY -
+                                rb.Value.minY > 0)
+                        {
+                            minX = rb.Value.minX;
+                            minY = rb.Value.minY;
+                            maxX = rb.Value.maxX;
+                            maxY = rb.Value.maxY;
+
+                            result.MergeErrors.Add(
+                                $"{Path.GetFileName(t.SheetId)}: " +
+                                "neatline and inspection bounds invalid — " +
+                                "using raw entity bounds as fallback " +
+                                $"({minX:F0},{minY:F0} → " +
+                                $"{maxX:F0},{maxY:F0}).");
+                        }
+                        else
+                        {
+                            minX = 0;
+                            minY = 0;
+                            maxX = 0;
+                            maxY = 0;
+                        }
+
+                        var polygons =
+                            boundaryPolygonsBySheetId.TryGetValue(
+                                t.SheetId,
+                                out var polys)
+                                ? polys
+                                : new List<
+                                    List<(double X, double Y)>>();
+
+                        return new CadSheetGridItem
+                        {
+                            FileName =
+                                ExtractDisplayFileName(
+                                    t.SheetId),
+
+                            FilePath =
+                                t.SheetId,
+
+                            SheetNumber =
+                                t.SheetNumber ??
+                                string.Empty,
+
+                            Column =
+                                t.GridX - minGx,
+
+                            Row =
+                                maxGy - t.GridY,
+
+                            MinX = minX,
+                            MinY = minY,
+                            MaxX = maxX,
+                            MaxY = maxY,
+
+                            EntityCount =
+                                inspection?.EntityCount ?? 0,
+
+                            LaghuReferenceCount =
+                                inspection?.LaghuReferences.Count ?? 0,
+
+                            LaghuReferences =
+                                inspection?.LaghuReferences.ToList()
+                                ?? new List<LaghuReferenceViewModel>(),
+
+                            BoundaryPolygons =
+                                polygons
+                        };
+                    })
+                    .ToList();
+
+            foreach (
+                var unplaced in
+                topology.Sheets.Where(t => !t.Placed))
             {
-                var neatline = neatlinesBySheetId.TryGetValue(t.SheetId, out var n) ? n : new NeatlineExtent();
-                var inspection = inspectionsBySheetId.TryGetValue(t.SheetId, out var insp) ? insp : null;
-
-                // Fall back to full CAD inspection bounds when the neatline
-                // layer produced no valid extent (layer missing, empty, or
-                // zero-size). Without this, Width/Height stay 0 and the
-                // Geometry Grid SVG renders invisible zero-size rectangles.
-                double minX, minY, maxX, maxY;
-                if (neatline.IsValid)
-                {
-                    minX = neatline.MinX;
-                    minY = neatline.MinY;
-                    maxX = neatline.MaxX;
-                    maxY = neatline.MaxY;
-                }
-                else if (inspection != null && (inspection.MaxX - inspection.MinX) > 0 && (inspection.MaxY - inspection.MinY) > 0)
-                {
-                    minX = inspection.MinX;
-                    minY = inspection.MinY;
-                    maxX = inspection.MaxX;
-                    maxY = inspection.MaxY;
-                }
-                else if (rawBoundsByFile.TryGetValue(t.SheetId, out var rb) && rb.HasValue
-                    && (rb.Value.maxX - rb.Value.minX) > 0
-                    && (rb.Value.maxY - rb.Value.minY) > 0)
-                {
-                    // 3rd fallback: raw entity extent — used when Poly_Survey_Bndry is
-                    // absent and inspection gives zero-size bounds. Ensures the sheet
-                    // still participates in the DXF stitch instead of being silently excluded.
-                    minX = rb.Value.minX;
-                    minY = rb.Value.minY;
-                    maxX = rb.Value.maxX;
-                    maxY = rb.Value.maxY;
-                    result.MergeErrors.Add($"{Path.GetFileName(t.SheetId)}: neatline and inspection bounds invalid — using raw entity bounds as fallback ({minX:F0},{minY:F0} → {maxX:F0},{maxY:F0}).");
-                }
-                else
-                {
-                    minX = minY = maxX = maxY = 0;
-                }
-
-                var polygons = boundaryPolygonsBySheetId.TryGetValue(t.SheetId, out var polys) ? polys : new List<List<(double X, double Y)>>();
-
-                return new CadSheetGridItem
-                {
-                    FileName = ExtractDisplayFileName(t.SheetId),
-                    FilePath = t.SheetId,
-                    SheetNumber = t.SheetNumber ?? string.Empty,
-                    Column = t.GridX - minGx,
-                    Row = maxGy - t.GridY,
-                    MinX = minX,
-                    MinY = minY,
-                    MaxX = maxX,
-                    MaxY = maxY,
-                    EntityCount = inspection?.EntityCount ?? 0,
-                    LaghuReferenceCount = inspection?.LaghuReferences.Count ?? 0,
-                    LaghuReferences = inspection?.LaghuReferences.ToList() ?? new List<LaghuReferenceViewModel>(),
-                    BoundaryPolygons = polygons
-                };
-            }).ToList();
-
-            foreach (var u in topology.Sheets.Where(t => !t.Placed))
-                result.MergeErrors.Add($"{Path.GetFileName(u.SheetId)}: not connected to the topology graph, excluded from arrangement.");
-
-            result.MissingSlots = topology.MissingSlots
-                .Select(m => new CadMissingSheetSlot
-                {
-                    SheetNumber = m.SheetNumber,
-                    Column = m.GridX - minGx,
-                    Row = maxGy - m.GridY
-                })
-                .ToList();
-
-            result.SheetCount = result.Sheets.Count;
-            result.ColumnCount = new[] { result.Sheets.Count > 0 ? result.Sheets.Max(s => s.Column) : -1,
-                                          result.MissingSlots.Count > 0 ? result.MissingSlots.Max(s => s.Column) : -1 }
-                                  .Max() + 1;
-            result.RowCount = new[] { result.Sheets.Count > 0 ? result.Sheets.Max(s => s.Row) : -1,
-                                       result.MissingSlots.Count > 0 ? result.MissingSlots.Max(s => s.Row) : -1 }
-                               .Max() + 1;
-
-            if (!string.IsNullOrWhiteSpace(outputRootPath))
-            {
-                try
-                {
-                    StitchMasterDxf(result, outputRootPath, docsBySheetId);
-                }
-                catch (Exception ex)
-                {
-                    result.MergeErrors.Add($"DXF export failed: {ex.Message}");
-                }
+                result.MergeErrors.Add(
+                    $"{Path.GetFileName(unplaced.SheetId)}: " +
+                    "not connected to the topology graph, " +
+                    "excluded from arrangement.");
             }
+
+            result.MissingSlots =
+                topology.MissingSlots
+                    .Select(m =>
+                        new CadMissingSheetSlot
+                        {
+                            SheetNumber =
+                                m.SheetNumber,
+
+                            Column =
+                                m.GridX - minGx,
+
+                            Row =
+                                maxGy - m.GridY
+                        })
+                    .ToList();
+
+            result.SheetCount =
+                result.Sheets.Count;
+
+            result.ColumnCount =
+                new[]
+                {
+                    result.Sheets.Count > 0
+                        ? result.Sheets.Max(
+                            s => s.Column)
+                        : -1,
+
+                    result.MissingSlots.Count > 0
+                        ? result.MissingSlots.Max(
+                            s => s.Column)
+                        : -1
+                }.Max() + 1;
+
+            result.RowCount =
+                new[]
+                {
+                    result.Sheets.Count > 0
+                        ? result.Sheets.Max(
+                            s => s.Row)
+                        : -1,
+
+                    result.MissingSlots.Count > 0
+                        ? result.MissingSlots.Max(
+                            s => s.Row)
+                        : -1
+                }.Max() + 1;
+
+            // DXF export/stitching has intentionally been removed.
+            // outputRootPath is retained in the method signature so the
+            // existing interface/controller does not break.
 
             return result;
         }
 
-        // Computes a bounding box from every geometric entity in the document —
-        // polylines, lines, circles, inserts, and text — without filtering by layer.
-        // Returns null when the document contains no measurable coordinates.
-        private static (double minX, double minY, double maxX, double maxY)? ComputeRawEntityBounds(CadDocument doc)
+        private static CadDocument ReadCadDocument(
+            string file,
+            List<string> errors)
         {
-            double minX = double.MaxValue, minY = double.MaxValue;
-            double maxX = double.MinValue, maxY = double.MinValue;
+            var ext =
+                Path.GetExtension(file)
+                    .ToLowerInvariant();
+
+            void OnNotification(
+                object sender,
+                NotificationEventArgs args)
+            {
+                var message =
+                    $"[{args.NotificationType}] " +
+                    $"{args.Message}";
+
+                if (args.Exception != null)
+                {
+                    message +=
+                        $" | " +
+                        $"{args.Exception.GetType().Name}: " +
+                        $"{args.Exception.Message}";
+                }
+
+                errors.Add(
+                    $"{Path.GetFileName(file)}: " +
+                    $"ACadSharp — {message}");
+            }
+
+            if (ext == ".dxf")
+            {
+                var configuration =
+                    new DxfReaderConfiguration
+                    {
+                        Failsafe = false
+                    };
+
+                return DxfReader.Read(
+                    file,
+                    configuration,
+                    OnNotification);
+            }
+
+            if (ext == ".dwg")
+            {
+                var configuration =
+                    new DwgReaderConfiguration
+                    {
+                        Failsafe = false
+                    };
+
+                return DwgReader.Read(
+                    file,
+                    configuration,
+                    OnNotification);
+            }
+
+            throw new NotSupportedException(
+                $"Unsupported CAD file type: {ext}");
+        }
+
+        private static (
+            double minX,
+            double minY,
+            double maxX,
+            double maxY)?
+            ComputeRawEntityBounds(
+                CadDocument doc)
+        {
+            double minX =
+                double.MaxValue;
+
+            double minY =
+                double.MaxValue;
+
+            double maxX =
+                double.MinValue;
+
+            double maxY =
+                double.MinValue;
+
             bool hasPoints = false;
 
-            void Expand(double x, double y)
+            void Expand(
+                double x,
+                double y)
             {
-                if (x < minX) minX = x;
-                if (y < minY) minY = y;
-                if (x > maxX) maxX = x;
-                if (y > maxY) maxY = y;
+                if (x < minX)
+                    minX = x;
+
+                if (y < minY)
+                    minY = y;
+
+                if (x > maxX)
+                    maxX = x;
+
+                if (y > maxY)
+                    maxY = y;
+
                 hasPoints = true;
             }
 
-            foreach (var entity in FlattenDocumentEntities(doc.Entities, 0))
+            foreach (
+                var entity in
+                FlattenDocumentEntities(
+                    doc.Entities,
+                    0))
             {
                 try
                 {
-                    switch (entity)
+                    if (entity is LwPolyline lw)
                     {
-                        case LwPolyline lw:
-                            foreach (var v in lw.Vertices) Expand(v.Location.X, v.Location.Y);
-                            break;
-                        case Polyline2D p2d:
-                            foreach (var v in p2d.Vertices) Expand(v.Location.X, v.Location.Y);
-                            break;
-                        case Line l:
-                            Expand(l.StartPoint.X, l.StartPoint.Y);
-                            Expand(l.EndPoint.X, l.EndPoint.Y);
-                            break;
-                        case Circle c:
-                            Expand(c.Center.X - c.Radius, c.Center.Y - c.Radius);
-                            Expand(c.Center.X + c.Radius, c.Center.Y + c.Radius);
-                            break;
-                        case TextEntity t:
-                            Expand(t.InsertPoint.X, t.InsertPoint.Y);
-                            break;
-                        case MText mt:
-                            Expand(mt.InsertPoint.X, mt.InsertPoint.Y);
-                            break;
-                        case Insert ins:
-                            Expand(ins.InsertPoint.X, ins.InsertPoint.Y);
-                            break;
+                        foreach (var vertex in lw.Vertices)
+                        {
+                            Expand(
+                                vertex.Location.X,
+                                vertex.Location.Y);
+                        }
+                    }
+                    else if (entity is Polyline2D p2d)
+                    {
+                        foreach (var vertex in p2d.Vertices)
+                        {
+                            Expand(
+                                vertex.Location.X,
+                                vertex.Location.Y);
+                        }
+                    }
+                    else if (entity is Line line)
+                    {
+                        Expand(
+                            line.StartPoint.X,
+                            line.StartPoint.Y);
+
+                        Expand(
+                            line.EndPoint.X,
+                            line.EndPoint.Y);
+                    }
+                    else if (entity is Circle circle)
+                    {
+                        Expand(
+                            circle.Center.X -
+                                circle.Radius,
+                            circle.Center.Y -
+                                circle.Radius);
+
+                        Expand(
+                            circle.Center.X +
+                                circle.Radius,
+                            circle.Center.Y +
+                                circle.Radius);
+                    }
+                    else if (entity is Arc arc)
+                    {
+                        Expand(
+                            arc.Center.X -
+                                arc.Radius,
+                            arc.Center.Y -
+                                arc.Radius);
+
+                        Expand(
+                            arc.Center.X +
+                                arc.Radius,
+                            arc.Center.Y +
+                                arc.Radius);
+                    }
+                    else if (entity is TextEntity text)
+                    {
+                        Expand(
+                            text.InsertPoint.X,
+                            text.InsertPoint.Y);
+                    }
+                    else if (entity is MText mtext)
+                    {
+                        Expand(
+                            mtext.InsertPoint.X,
+                            mtext.InsertPoint.Y);
                     }
                 }
-                catch { /* skip bad entities */ }
+                catch
+                {
+                }
             }
 
-            return hasPoints ? (minX, minY, maxX, maxY) : null;
+            return hasPoints
+                ? (
+                    minX,
+                    minY,
+                    maxX,
+                    maxY)
+                : null;
         }
 
-        // Extracts all closed polygon rings from the given layer (Poly_Survey_Bndry).
-        // Walks both top-level entities and INSERT children (same block-flattening
-        // logic as NeatlineExtractionService) so geometry inside blocks is captured.
-        private static List<List<(double X, double Y)>> ExtractBoundaryPolygons(CadDocument doc, string layerName)
+        private static List<
+            List<(double X, double Y)>>
+            ExtractBoundaryPolygons(
+                CadDocument doc,
+                string layerName)
         {
-            var rings = new List<List<(double X, double Y)>>();
+            var rings =
+                new List<
+                    List<(double X, double Y)>>();
 
-            foreach (var entity in FlattenDocumentEntities(doc.Entities, 0))
+            foreach (
+                var entity in
+                FlattenDocumentEntities(
+                    doc.Entities,
+                    0))
             {
-                var layer = entity.Layer?.Name ?? string.Empty;
-                if (!string.Equals(layer, layerName, StringComparison.OrdinalIgnoreCase))
-                    continue;
-
-                List<(double X, double Y)>? ring = null;
-
-                if (entity is LwPolyline lw && lw.Vertices.Count >= 3)
+                try
                 {
-                    ring = lw.Vertices.Select(v => (v.Location.X, v.Location.Y)).ToList();
-                }
-                else if (entity is Polyline2D p2d)
-                {
-                    var pts = p2d.Vertices.Select(v => (v.Location.X, v.Location.Y)).ToList();
-                    if (pts.Count >= 3) ring = pts;
-                }
+                    var entityLayer =
+                        entity.Layer?.Name ??
+                        string.Empty;
 
-                if (ring != null && ring.Count >= 3)
-                    rings.Add(ring);
+                    if (!string.Equals(
+                            entityLayer,
+                            layerName,
+                            StringComparison.OrdinalIgnoreCase))
+                    {
+                        continue;
+                    }
+
+                    List<(double X, double Y)>? ring =
+                        null;
+
+                    if (
+                        entity is LwPolyline lw &&
+                        lw.Vertices.Count >= 3)
+                    {
+                        ring =
+                            lw.Vertices
+                                .Select(v =>
+                                    (
+                                        v.Location.X,
+                                        v.Location.Y))
+                                .ToList();
+                    }
+                    else if (entity is Polyline2D p2d)
+                    {
+                        var points =
+                            p2d.Vertices
+                                .Select(v =>
+                                    (
+                                        v.Location.X,
+                                        v.Location.Y))
+                                .ToList();
+
+                        if (points.Count >= 3)
+                            ring = points;
+                    }
+
+                    if (
+                        ring != null &&
+                        ring.Count >= 3)
+                    {
+                        rings.Add(ring);
+                    }
+                }
+                catch
+                {
+                }
             }
 
             return rings;
         }
 
-        private static IEnumerable<Entity> FlattenDocumentEntities(IEnumerable<Entity> entities, int depth)
+        private static IEnumerable<Entity>
+            FlattenDocumentEntities(
+                IEnumerable<Entity> entities,
+                int depth)
         {
-            if (depth > 8) yield break;
+            if (depth > 32)
+                yield break;
 
             foreach (var entity in entities)
             {
+                if (entity == null)
+                    continue;
+
                 if (entity is Insert insert)
                 {
-                    List<Entity>? children = null;
-                    try { children = insert.Block?.Entities?.Cast<Entity>().ToList(); } catch { }
-                    if (children != null)
-                        foreach (var child in FlattenDocumentEntities(children, depth + 1))
-                            yield return child;
-                    continue;
-                }
-                yield return entity;
-            }
-        }
+                    BlockRecord? block = null;
 
-        // Exports the geometry grid as a master DXF. Each sheet's full entity set
-        // is cloned and translated so it sits at the same Row/Column grid position
-        // shown in the SVG Geometry Grid — using each sheet's own MinX/MaxY as the
-        // normalisation origin (same as the SVG rendering) so the exported layout
-        // matches what the user sees on screen exactly.
-        private void StitchMasterDxf(CadSheetGridResult result, string outputRootPath, Dictionary<string, CadDocument> docsBySheetId)
-        {
-            var stitchable = result.Sheets
-                .Where(s => s.MaxX > s.MinX && s.MaxY > s.MinY)
-                .ToList();
-
-            // Diagnostic: show bounds for every sheet so failures are visible in UI
-            foreach (var s in result.Sheets)
-                result.MergeErrors.Add($"[BOUNDS] {s.FileName}: MinX={s.MinX:F2} MinY={s.MinY:F2} MaxX={s.MaxX:F2} MaxY={s.MaxY:F2} W={s.Width:F2} H={s.Height:F2}");
-
-            if (stitchable.Count == 0)
-            {
-                result.MergeErrors.Add("Stitch skipped: no sheet has a valid extent.");
-                return;
-            }
-
-            const double margin = 50.0;
-            const double defaultCell = 500.0;
-
-            // Per-column max width and per-row max height — same logic as the SVG grid.
-            var colCount = result.Sheets.Max(s => s.Column) + 1;
-            var rowCount = result.Sheets.Max(s => s.Row) + 1;
-
-            var colMaxWidth = new double[colCount];
-            var rowMaxHeight = new double[rowCount];
-
-            foreach (var s in stitchable)
-            {
-                if (s.Width > colMaxWidth[s.Column]) colMaxWidth[s.Column] = s.Width;
-                if (s.Height > rowMaxHeight[s.Row]) rowMaxHeight[s.Row] = s.Height;
-            }
-
-            // Fill zero-width/height slots with a default so offsets don't collapse.
-            for (int c = 0; c < colCount; c++)
-                if (colMaxWidth[c] <= 0) colMaxWidth[c] = defaultCell;
-            for (int r = 0; r < rowCount; r++)
-                if (rowMaxHeight[r] <= 0) rowMaxHeight[r] = defaultCell;
-
-            // Cumulative column and row offsets — matches SVG geoColOffsets/geoRowOffsets.
-            var colOffset = new double[colCount];
-            var rowOffset = new double[rowCount];
-            for (int c = 1; c < colCount; c++)
-                colOffset[c] = colOffset[c - 1] + colMaxWidth[c - 1] + margin;
-            for (int r = 1; r < rowCount; r++)
-                rowOffset[r] = rowOffset[r - 1] + rowMaxHeight[r - 1] + margin;
-
-            var masterDocument = new CadDocument();
-            int stitchedCount = 0;
-
-            foreach (var sheet in result.Sheets)
-            {
-                if (sheet.MaxX <= sheet.MinX || sheet.MaxY <= sheet.MinY)
-                {
-                    result.MergeErrors.Add($"{sheet.FileName}: no valid extent, excluded from DXF export.");
-                    continue;
-                }
-
-                try
-                {
-                    // In the SVG: cell origin = (colOffset[col], rowOffset[row]).
-                    // Sheet is centred in cell. CAD Y is up; SVG Y is down.
-                    // For DXF export we keep CAD coordinate space (Y up):
-                    //   tx: move sheet's MinX to cell left edge (+ centre offset)
-                    //   ty: move sheet's MaxY to cell top edge  (+ centre offset, negated)
-                    var cellW = colMaxWidth[sheet.Column];
-                    var cellH = rowMaxHeight[sheet.Row];
-                    var centreOffsetX = (cellW - sheet.Width) / 2.0;
-                    var centreOffsetY = (cellH - sheet.Height) / 2.0;
-
-                    var tx = colOffset[sheet.Column] + centreOffsetX - sheet.MinX;
-                    var ty = -(rowOffset[sheet.Row] + centreOffsetY) - sheet.MaxY;
-
-                    var cloned = CloneEntitiesTranslated(sheet.FilePath, docsBySheetId, tx, ty, result.MergeErrors);
-                    var reboundCount = 0;
-                    foreach (var entity in cloned)
-                    {
-                        try
-                        {
-                            var boundEntity = RebindTables(entity, masterDocument);
-                            masterDocument.Entities.Add(boundEntity);
-                            reboundCount++;
-                        }
-                        catch (Exception exEntity)
-                        {
-                            result.MergeErrors.Add(
-                                $"{sheet.FileName}: entity {entity.GetType().Name} rebind skipped — " +
-                                $"{exEntity.GetType().Name}: {exEntity.Message}");
-                        }
-                    }
-
-                    if (reboundCount == 0 && cloned.Count > 0)
-                        throw new InvalidOperationException($"all {cloned.Count} cloned entities failed to rebind.");
-                    if (cloned.Count == 0)
-                        throw new InvalidOperationException("no entities could be cloned from source file (see entity errors above for detail).");
-
-                    // Sheet label at top-left of the translated cell.
-                    var labelX = colOffset[sheet.Column] + centreOffsetX;
-                    var labelY = -(rowOffset[sheet.Row] + centreOffsetY) + sheet.Height + 3.0;
-
-                    var labelLayer = masterDocument.Layers.FirstOrDefault(l => l.Name == "0")
-                                     ?? new Layer("0");
-                    if (!masterDocument.Layers.Any(l => l.Name == "0"))
-                        masterDocument.Layers.Add(labelLayer);
-
-                    var label = new TextEntity
-                    {
-                        Value = $"Sheet {sheet.SheetNumber}",
-                        Height = 3.0,
-                        InsertPoint = new CSMath.XYZ(labelX, labelY, 0),
-                        Layer = labelLayer
-                    };
-                    masterDocument.Entities.Add(label);
-
-                    stitchedCount++;
-                }
-                catch (Exception ex)
-                {
-                    var detail = $"{ex.GetType().Name}: {ex.Message}";
-                    if (ex.InnerException != null)
-                        detail += $" [inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}]";
-                    result.MergeErrors.Add($"{sheet.FileName}: stitch failed — {detail}");
-                }
-            }
-
-            if (stitchedCount == 0)
-            {
-                result.MergeErrors.Add("Master DXF stitch produced no entities.");
-                return;
-            }
-
-            try
-            {
-                Directory.CreateDirectory(outputRootPath);
-                var fileName = $"cadgrid_merge_{Guid.NewGuid():N}.dxf";
-                var fullPath = Path.Combine(outputRootPath, fileName);
-
-                DxfWriter.Write(fullPath, masterDocument);
-
-                result.MergeOutputFileName = fileName;
-            }
-            catch (Exception ex)
-            {
-                result.MergeErrors.Add($"Failed to write master DXF: {ex.Message}");
-            }
-        }
-
-        private static List<Entity> CloneEntitiesTranslated(
-            string sourceFilePath,
-            Dictionary<string, CadDocument> docsBySheetId,
-            double tx,
-            double ty,
-            List<string> entityErrors)
-        {
-            CadDocument sourceDocument;
-
-            if (docsBySheetId.TryGetValue(sourceFilePath, out var cachedDoc))
-            {
-                // Reuse the document already parsed during the extraction pass —
-                // avoids a second DwgReader.Read call on the same file.
-                sourceDocument = cachedDoc;
-            }
-            else
-            {
-                var ext = Path.GetExtension(sourceFilePath).ToLowerInvariant();
-                try
-                {
-                    sourceDocument = ext == ".dxf" ? DxfReader.Read(sourceFilePath) : DwgReader.Read(sourceFilePath);
-                }
-                catch (Exception exRead)
-                {
-                    throw new InvalidOperationException(
-                        $"re-read for export failed — {exRead.GetType().Name}: {exRead.Message}" +
-                        (exRead.InnerException != null ? $" [inner: {exRead.InnerException.Message}]" : ""),
-                        exRead);
-                }
-            }
-
-            var translation = CSMath.Transform.CreateTranslation(new CSMath.XYZ(tx, ty, 0));
-            var cloned = new List<Entity>();
-
-            // Deliberately NOT using .ToList() here: forcing the whole Entities
-            // sequence to materialize in one call means a single malformed
-            // entity anywhere in the document (e.g. one with an unresolved
-            // style/block reference) throws and discards every entity in the
-            // file, not just the bad one. Stepping the enumerator manually and
-            // catching around MoveNext() lets us skip just that one entity and
-            // keep going.
-            IEnumerator<Entity>? enumerator = null;
-            try
-            {
-                enumerator = sourceDocument.Entities.GetEnumerator();
-
-                while (true)
-                {
-                    Entity sourceEntity;
                     try
                     {
-                        if (!enumerator.MoveNext())
-                            break;
-                        sourceEntity = enumerator.Current;
+                        block = insert.Block;
                     }
-                    catch (Exception exMove)
+                    catch
                     {
-                        entityErrors.Add(
-                            $"{Path.GetFileName(sourceFilePath)}: entity enumeration error — " +
-                            $"{exMove.GetType().Name}: {exMove.Message}");
-                        continue; // try to keep advancing past the bad entry
+                        continue;
                     }
 
-                    if (sourceEntity == null)
+                    if (block == null)
                         continue;
 
+                    List<Entity>? children =
+                        null;
+
                     try
                     {
-                        var clone = (Entity)sourceEntity.Clone();
-                        clone.ApplyTransform(translation);
-                        cloned.Add(clone);
+                        children =
+                            block.Entities
+                                .Where(x => x != null)
+                                .ToList();
                     }
-                    catch (Exception exClone)
+                    catch
                     {
-                        entityErrors.Add(
-                            $"{Path.GetFileName(sourceFilePath)}: entity {sourceEntity.GetType().Name} " +
-                            $"(handle {sourceEntity.Handle}) skipped — {exClone.GetType().Name}: {exClone.Message}");
+                        continue;
                     }
-                }
-            }
-            finally
-            {
-                enumerator?.Dispose();
-            }
 
-            return cloned;
-        }
-
-        // Rebind entity's Layer/LineType/Block references to masterDocument equivalents.
-        // For Insert: read InsertPoint AFTER translation has already been applied to
-        // the clone, then rebuild with the translated point against the master block.
-        private static Entity RebindTables(Entity entity, CadDocument masterDocument, HashSet<string>? visitedBlocks = null)
-        {
-            visitedBlocks ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-            // Ensure Layer exists in master
-            var layerName = string.IsNullOrEmpty(entity.Layer?.Name) ? "0" : entity.Layer.Name;
-            var masterLayer = masterDocument.Layers.FirstOrDefault(l => l.Name == layerName);
-            if (masterLayer == null)
-            {
-                masterLayer = new Layer(layerName);
-                masterDocument.Layers.Add(masterLayer);
-            }
-            entity.Layer = masterLayer;
-
-            // Rebind LineType if it already exists in master (don't create missing ones)
-            var lineTypeName = entity.LineType?.Name;
-            if (!string.IsNullOrEmpty(lineTypeName))
-            {
-                var masterLineType = masterDocument.LineTypes.FirstOrDefault(l => l.Name == lineTypeName);
-                if (masterLineType != null)
-                    entity.LineType = masterLineType;
-                else
-                    entity.LineType = null; // fall back to ByLayer
-            }
-
-            if (entity is Insert sourceInsert && sourceInsert.Block != null)
-            {
-                var blockName = string.IsNullOrEmpty(sourceInsert.Block.Name)
-                    ? $"UNNAMED_BLOCK_{Guid.NewGuid():N}"
-                    : sourceInsert.Block.Name;
-
-                // Copy block definition into master once
-                if (!masterDocument.BlockRecords.Any(b => b.Name == blockName) && visitedBlocks.Add(blockName))
-                {
-                    try
+                    foreach (
+                        var child in
+                        FlattenDocumentEntities(
+                            children,
+                            depth + 1))
                     {
-                        var clonedBlock = (BlockRecord)sourceInsert.Block.Clone();
-                        clonedBlock.Name = blockName;
-                        foreach (var nestedEntity in clonedBlock.Entities.ToList())
-                        {
-                            try { RebindTables(nestedEntity, masterDocument, visitedBlocks); }
-                            catch { /* skip malformed nested entity, keep block */ }
-                        }
-                        masterDocument.BlockRecords.Add(clonedBlock);
+                        yield return child;
                     }
-                    catch { }
+
+                    continue;
                 }
 
-                var masterBlock = masterDocument.BlockRecords.FirstOrDefault(b => b.Name == blockName);
-                if (masterBlock == null) return entity; // can't fix — return as-is
-
-                // InsertPoint already has the translation applied by ApplyTransform on the clone.
-                var rebuilt = new Insert(masterBlock)
-                {
-                    InsertPoint = sourceInsert.InsertPoint, // translated point from clone
-                    Normal = sourceInsert.Normal,
-                    Rotation = sourceInsert.Rotation,
-                    XScale = sourceInsert.XScale,
-                    YScale = sourceInsert.YScale,
-                    ZScale = sourceInsert.ZScale,
-                    ColumnCount = sourceInsert.ColumnCount,
-                    ColumnSpacing = sourceInsert.ColumnSpacing,
-                    RowCount = sourceInsert.RowCount,
-                    RowSpacing = sourceInsert.RowSpacing,
-                    Layer = masterLayer,
-                    Color = sourceInsert.Color,
-                    LineWeight = sourceInsert.LineWeight,
-                    Transparency = sourceInsert.Transparency,
-                    IsInvisible = sourceInsert.IsInvisible
-                };
-
-                return rebuilt;
+                yield return entity;
             }
-
-            return entity;
         }
     }
 }
