@@ -34,5 +34,10 @@
 
         public List<LaghuReferenceViewModel> LaghuReferences { get; set; }
             = new();
+
+        // Each inner list is one closed polygon ring from Poly_Survey_Bndry.
+        // Points are in original CAD coordinates (not yet screen-scaled).
+        public List<List<(double X, double Y)>> BoundaryPolygons { get; set; }
+            = new();
     }
 }

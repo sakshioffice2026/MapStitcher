@@ -470,18 +470,44 @@
 
                         if (sheetsByPosition.TryGetValue((row, column), out var geoSheet))
                         {
-                            var rectW = geoSheet.Width * geoScale;
-                            var rectH = geoSheet.Height * geoScale;
-                            var rectX = cellX + (cellW - rectW) / 2;
-                            var rectY = cellY + (cellH - rectH) / 2;
+                            // CAD Y-axis is up; SVG Y-axis is down. Flip Y relative to sheet's MinY.
+                            // All polygon points are translated so MinX/MinY maps to cell top-left.
+                            var originX = cellX + (cellW - geoSheet.Width * geoScale) / 2;
+                            var originY = cellY + (cellH - geoSheet.Height * geoScale) / 2;
+                            var sheetMinX = geoSheet.MinX;
+                            var sheetMaxY = geoSheet.MaxY;
 
-                            <rect class="geometry-svg-sheet-rect"
-                                  x="@GeoNum(rectX)" y="@GeoNum(rectY)"
-                                  width="@GeoNum(rectW)" height="@GeoNum(rectH)" />
+                            var hasPolygons = geoSheet.BoundaryPolygons != null && geoSheet.BoundaryPolygons.Count > 0;
 
-                            @Html.Raw($"<text class=\"geometry-svg-label\" x=\"{GeoNum(rectX + 6)}\" y=\"{GeoNum(rectY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoSheet.SheetNumber)}</text>")
+                            if (hasPolygons)
+                            {
+                                // Cell background
+                                @Html.Raw($"<rect class=\"geometry-svg-sheet-rect\" x=\"{GeoNum(originX)}\" y=\"{GeoNum(originY)}\" width=\"{GeoNum(geoSheet.Width * geoScale)}\" height=\"{GeoNum(geoSheet.Height * geoScale)}\" fill=\"#f8f9ff\" stroke=\"#ccc\" stroke-width=\"0.5\" />")
 
-                            @Html.Raw($"<text class=\"geometry-svg-sublabel\" x=\"{GeoNum(rectX + 6)}\" y=\"{GeoNum(rectY + 30)}\">{WebUtility.HtmlEncode(geoSheet.Width.ToString("F0") + " x " + geoSheet.Height.ToString("F0"))}</text>")
+                                foreach (var ring in geoSheet.BoundaryPolygons)
+                                {
+                                    if (ring.Count < 3) continue;
+
+                                    var pointsStr = string.Join(" ", ring.Select(p =>
+                                    {
+                                        var px = originX + (p.X - sheetMinX) * geoScale;
+                                        var py = originY + (sheetMaxY - p.Y) * geoScale;
+                                        return $"{GeoNum(px)},{GeoNum(py)}";
+                                    }));
+
+                                    @Html.Raw($"<polygon points=\"{pointsStr}\" fill=\"#ddeeff\" fill-opacity=\"0.5\" stroke=\"#3b6fce\" stroke-width=\"1.5\" stroke-linejoin=\"round\" />")
+                                }
+                            }
+                            else
+                            {
+                                // No polygon data — fall back to bounding box rectangle
+                                <rect class="geometry-svg-sheet-rect"
+                                      x="@GeoNum(originX)" y="@GeoNum(originY)"
+                                      width="@GeoNum(geoSheet.Width * geoScale)" height="@GeoNum(geoSheet.Height * geoScale)" />
+                            }
+
+                            @Html.Raw($"<text class=\"geometry-svg-label\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoSheet.SheetNumber)}</text>")
+                            @Html.Raw($"<text class=\"geometry-svg-sublabel\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 30)}\">{WebUtility.HtmlEncode(geoSheet.Width.ToString("F0") + " x " + geoSheet.Height.ToString("F0"))}</text>")
                         }
                         else if (missingByPosition.TryGetValue((row, column), out var geoMissing))
                         {
@@ -507,13 +533,22 @@
 
     @if (!string.IsNullOrWhiteSpace(Model.MergeOutputFileName))
     {
-        <section class="errors-section">
-            <h2>Merged Output</h2>
+        <section class="errors-section" style="border-color:#3b6fce; background:#f0f4ff;">
+            <h2 style="color:#3b6fce;">⬇ Export Geometry Grid</h2>
+            <p style="margin:0 0 12px 0; color:#555;">Full geometry of all placed sheets tiled in the same grid layout shown above.</p>
             <a asp-controller="CadGrid"
                asp-action="DownloadMerged"
-               asp-route-fileName="@Model.MergeOutputFileName">
-                ⬇ Download stitched master DXF
+               asp-route-fileName="@Model.MergeOutputFileName"
+               style="display:inline-block;padding:10px 22px;background:#3b6fce;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">
+                ⬇ Download Geometry Grid DXF
             </a>
+        </section>
+    }
+    else
+    {
+        <section class="errors-section" style="border-color:#ccc; background:#fafafa;">
+            <h2 style="color:#999;">Export Geometry Grid</h2>
+            <p style="margin:0; color:#aaa;">DXF export was not generated. Re-upload the files to trigger export.</p>
         </section>
     }
 
