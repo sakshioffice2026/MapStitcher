@@ -1,4 +1,6 @@
 ﻿// MapStitcher.Business/Services/SheetArrangementOrchestrator.cs
+using ACadSharp;
+using ACadSharp.Entities;
 using ACadSharp.IO;
 using MapStitcher.Business.Contracts;
 using MapStitcher.Model;
@@ -43,7 +45,12 @@ namespace MapStitcher.Business.Services
             _inspectionService = inspectionService;
         }
 
-        public async Task<CadSheetGridResult> ArrangeAsync(string directoryPath)
+        public Task<CadSheetGridResult> ArrangeAsync(string directoryPath)
+        {
+            return ArrangeAsync(directoryPath, null);
+        }
+
+        public async Task<CadSheetGridResult> ArrangeAsync(string directoryPath, string? outputRootPath)
         {
             var result = new CadSheetGridResult();
 
@@ -122,9 +129,20 @@ namespace MapStitcher.Business.Services
                 return result;
             }
 
-            int minGx = placedSheets.Min(t => t.GridX);
-            int minGy = placedSheets.Min(t => t.GridY);
-            int maxGy = placedSheets.Max(t => t.GridY);
+            // Bounds must span both real placed sheets and any blank boxes for
+            // referenced-but-not-uploaded neighbours, so a missing sheet at the
+            // grid's edge still gets its own row/column instead of being clipped.
+            int minGx = Math.Min(
+                placedSheets.Min(t => t.GridX),
+                topology.MissingSlots.Count > 0 ? topology.MissingSlots.Min(m => m.GridX) : int.MaxValue);
+
+            int minGy = Math.Min(
+                placedSheets.Min(t => t.GridY),
+                topology.MissingSlots.Count > 0 ? topology.MissingSlots.Min(m => m.GridY) : int.MaxValue);
+
+            int maxGy = Math.Max(
+                placedSheets.Max(t => t.GridY),
+                topology.MissingSlots.Count > 0 ? topology.MissingSlots.Max(m => m.GridY) : int.MinValue);
 
             result.Sheets = placedSheets.Select(t =>
             {
@@ -150,11 +168,129 @@ namespace MapStitcher.Business.Services
             foreach (var u in topology.Sheets.Where(t => !t.Placed))
                 result.MergeErrors.Add($"{Path.GetFileName(u.SheetId)}: not connected to the topology graph, excluded from arrangement.");
 
+            result.MissingSlots = topology.MissingSlots
+                .Select(m => new CadMissingSheetSlot
+                {
+                    SheetNumber = m.SheetNumber,
+                    Column = m.GridX - minGx,
+                    Row = maxGy - m.GridY
+                })
+                .ToList();
+
             result.SheetCount = result.Sheets.Count;
-            result.ColumnCount = result.Sheets.Count > 0 ? result.Sheets.Max(s => s.Column) + 1 : 0;
-            result.RowCount = result.Sheets.Count > 0 ? result.Sheets.Max(s => s.Row) + 1 : 0;
+            result.ColumnCount = new[] { result.Sheets.Count > 0 ? result.Sheets.Max(s => s.Column) : -1,
+                                          result.MissingSlots.Count > 0 ? result.MissingSlots.Max(s => s.Column) : -1 }
+                                  .Max() + 1;
+            result.RowCount = new[] { result.Sheets.Count > 0 ? result.Sheets.Max(s => s.Row) : -1,
+                                       result.MissingSlots.Count > 0 ? result.MissingSlots.Max(s => s.Row) : -1 }
+                               .Max() + 1;
+
+            if (!string.IsNullOrWhiteSpace(outputRootPath))
+                StitchMasterDxf(result, outputRootPath);
 
             return result;
+        }
+
+        // Best-effort mosaic stitch: no shared real-world coordinates exist at
+        // this stage (that only happens after tie-point georeferencing in the
+        // DB-backed workflow), so sheets are tiled edge-to-edge using a uniform
+        // cell size derived from the largest neatline extent, in the same
+        // Row/Column order already resolved by the topology grid. Failures for
+        // an individual sheet are recorded as merge errors and the sheet is
+        // skipped; the whole grid result is still returned either way.
+        private void StitchMasterDxf(CadSheetGridResult result, string outputRootPath)
+        {
+            var stitchable = result.Sheets
+                .Where(s => s.MaxX > s.MinX && s.MaxY > s.MinY)
+                .ToList();
+
+            if (stitchable.Count == 0)
+            {
+                result.MergeErrors.Add("Stitch skipped: no sheet has a valid neatline extent.");
+                return;
+            }
+
+            const double margin = 50.0;
+            var cellWidth = stitchable.Max(s => s.Width) + margin;
+            var cellHeight = stitchable.Max(s => s.Height) + margin;
+
+            var masterDocument = new CadDocument();
+            int stitchedCount = 0;
+
+            foreach (var sheet in result.Sheets)
+            {
+                if (sheet.MaxX <= sheet.MinX || sheet.MaxY <= sheet.MinY)
+                {
+                    result.MergeErrors.Add($"{sheet.FileName}: no valid neatline, excluded from master DXF stitch.");
+                    continue;
+                }
+
+                try
+                {
+                    var tx = sheet.Column * cellWidth - sheet.MinX;
+                    var ty = -(sheet.Row * cellHeight) - sheet.MaxY;
+
+                    var cloned = CloneEntitiesTranslated(sheet.FilePath, tx, ty);
+                    foreach (var entity in cloned)
+                        masterDocument.Entities.Add(entity);
+
+                    var label = new TextEntity
+                    {
+                        Value = $"Sheet {sheet.SheetNumber}",
+                        Height = 2.5,
+                        InsertPoint = new CSMath.XYZ(
+                            sheet.Column * cellWidth,
+                            -(sheet.Row * cellHeight) + 5,
+                            0)
+                    };
+                    masterDocument.Entities.Add(label);
+
+                    stitchedCount++;
+                }
+                catch (Exception ex)
+                {
+                    result.MergeErrors.Add($"{sheet.FileName}: stitch failed — {ex.Message}");
+                }
+            }
+
+            if (stitchedCount == 0)
+            {
+                result.MergeErrors.Add("Master DXF stitch produced no entities.");
+                return;
+            }
+
+            try
+            {
+                Directory.CreateDirectory(outputRootPath);
+                var fileName = $"cadgrid_merge_{Guid.NewGuid():N}.dxf";
+                var fullPath = Path.Combine(outputRootPath, fileName);
+
+                DxfWriter.Write(fullPath, masterDocument);
+
+                result.MergeOutputFileName = fileName;
+            }
+            catch (Exception ex)
+            {
+                result.MergeErrors.Add($"Failed to write master DXF: {ex.Message}");
+            }
+        }
+
+        private static List<Entity> CloneEntitiesTranslated(string sourceFilePath, double tx, double ty)
+        {
+            var ext = Path.GetExtension(sourceFilePath).ToLowerInvariant();
+            var sourceDocument = ext == ".dxf" ? DxfReader.Read(sourceFilePath) : DwgReader.Read(sourceFilePath);
+
+            var translation = CSMath.Transform.CreateTranslation(new CSMath.XYZ(tx, ty, 0));
+
+            var cloned = new List<Entity>();
+            foreach (var sourceEntity in sourceDocument.Entities.ToList())
+            {
+                var clone = (Entity)sourceEntity.Clone();
+                clone.ApplyTransform(translation);
+                cloned.Add(clone);
+            }
+
+            return cloned;
         }
     }
 }

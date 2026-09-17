@@ -20,9 +20,20 @@ namespace MapStitcher.Model
         public bool Placed { get; set; }
     }
 
+    /// <summary>A grid cell referenced by a neighbouring sheet's index box
+    /// (e.g. "12 to the north") whose file was never uploaded. Rendered as a
+    /// blank placeholder box instead of being silently omitted from the grid.</summary>
+    public class MissingSheetSlot
+    {
+        public string SheetNumber { get; set; } = string.Empty;
+        public int GridX { get; set; }
+        public int GridY { get; set; }
+    }
+
     public class TopologyBuildResult
     {
         public List<SheetTopologyResult> Sheets { get; set; } = new();
         public List<string> Anomalies { get; set; } = new();
+        public List<MissingSheetSlot> MissingSlots { get; set; } = new();
     }
 }

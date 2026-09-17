@@ -8,6 +8,10 @@
         .GroupBy(x => (x.Row, x.Column))
         .ToDictionary(g => g.Key, g => g.First());
 
+    var missingByPosition = Model.MissingSlots
+        .GroupBy(x => (x.Row, x.Column))
+        .ToDictionary(g => g.Key, g => g.First());
+
     var duplicatePositions = Model.Sheets
         .GroupBy(x => (x.Row, x.Column))
         .Where(g => g.Count() > 1)
@@ -146,6 +150,12 @@
         margin-top: 5px;
         font-size: 11px;
         color: #aaa;
+    }
+
+    .grid-missing {
+        border-color: #e0a800;
+        background: #fff8e6;
+        color: #8a6500;
     }
 
     .errors-section,
@@ -296,6 +306,24 @@
 
                             </div>
                         }
+                        else if (missingByPosition.TryGetValue(
+                        (row, column),
+                        out var missing))
+                        {
+                            <div class="grid-empty grid-missing">
+
+                                <div class="grid-empty-title">
+                                    Missing
+                                </div>
+
+                                <div class="grid-empty-position">
+                                    Sheet @missing.SheetNumber not uploaded
+                                    <br />
+                                    Row @row · Column @column
+                                </div>
+
+                            </div>
+                        }
                         else
                         {
                             <div class="grid-empty">
@@ -318,6 +346,18 @@
         </div>
 
     </section>
+
+    @if (!string.IsNullOrWhiteSpace(Model.MergeOutputFileName))
+    {
+        <section class="errors-section">
+            <h2>Merged Output</h2>
+            <a asp-controller="CadGrid"
+               asp-action="DownloadMerged"
+               asp-route-fileName="@Model.MergeOutputFileName">
+                ⬇ Download stitched master DXF
+            </a>
+        </section>
+    }
 
     @if ((Model.MergeErrors != null && Model.MergeErrors.Count > 0) ||
         duplicatePositions.Count > 0)

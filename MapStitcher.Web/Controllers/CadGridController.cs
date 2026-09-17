@@ -95,7 +95,12 @@ namespace MapStitcher.Web.Controllers
                         await file.CopyToAsync(stream);
                     }
 
-                    var result = await _arrangementService.ArrangeAsync(tempDirectory);
+                    var mergeOutputRoot = Path.Combine(
+                        _environment.WebRootPath,
+                        "exports",
+                        "cadgrid");
+
+                    var result = await _arrangementService.ArrangeAsync(tempDirectory, mergeOutputRoot);
 
                     if (result.SheetCount == 0 && skipped.Count == files.Count)
                     {
@@ -134,6 +139,30 @@ namespace MapStitcher.Web.Controllers
                 ViewBag.Error = $"Arrangement failed: {ex.Message}";
                 return View();
             }
+        }
+
+        [HttpGet]
+        public IActionResult DownloadMerged(string fileName)
+        {
+            // Path.GetFileName strips any directory segments, so a fileName
+            // like "..\..\secrets.txt" collapses to "secrets.txt" and can only
+            // ever resolve inside the cadgrid exports folder below.
+            var safeFileName = Path.GetFileName(fileName ?? string.Empty);
+
+            if (string.IsNullOrWhiteSpace(safeFileName))
+                return NotFound("No file specified.");
+
+            var fullPath = Path.Combine(
+                _environment.WebRootPath,
+                "exports",
+                "cadgrid",
+                safeFileName);
+
+            if (!System.IO.File.Exists(fullPath))
+                return NotFound("Merged file not found. It may have expired — please re-run the arrangement.");
+
+            var fileBytes = System.IO.File.ReadAllBytes(fullPath);
+            return File(fileBytes, "application/dxf", safeFileName);
         }
     }
 }

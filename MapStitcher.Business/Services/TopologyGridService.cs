@@ -264,6 +264,16 @@ namespace MapStitcher.Business.Services
             // graph has stopped growing.
             void ReportMissingNeighbours()
             {
+                var directionOffsets = new Dictionary<string, (int dx, int dy)>
+                {
+                    ["Top"] = (0, 1),
+                    ["Bottom"] = (0, -1),
+                    ["Left"] = (-1, 0),
+                    ["Right"] = (1, 0)
+                };
+
+                var missingCells = new HashSet<(int X, int Y)>();
+
                 foreach (var sheet in inputs)
                 {
                     Check(sheet.TopSheetNumber, "Top");
@@ -281,6 +291,28 @@ namespace MapStitcher.Business.Services
                         result.Anomalies.Add(
                             $"{Describe(sheet)}: index box names '{number}' to the " +
                             $"{Compass(direction)}, but that sheet has not been uploaded.");
+
+                        // Only place a blank box when we actually know where the
+                        // current sheet landed and that cell isn't already taken
+                        // by a real sheet or another missing slot.
+                        if (!positions.TryGetValue(sheet.SheetId, out var origin))
+                            return;
+
+                        var (dx, dy) = directionOffsets[direction];
+                        var cell = (X: origin.X + dx, Y: origin.Y + dy);
+
+                        if (positions.Any(p => p.Value == cell))
+                            return;
+
+                        if (!missingCells.Add(cell))
+                            return;
+
+                        result.MissingSlots.Add(new MissingSheetSlot
+                        {
+                            SheetNumber = number,
+                            GridX = cell.X,
+                            GridY = cell.Y
+                        });
                     }
                 }
             }
