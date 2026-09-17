@@ -69,6 +69,13 @@ namespace MapStitcher.Business.Services
             var neatlinesBySheetId = new Dictionary<string, NeatlineExtent>();
             var inspectionsBySheetId = new Dictionary<string, CadCoordinateInspectionResult>();
             var boundaryPolygonsBySheetId = new Dictionary<string, List<List<(double X, double Y)>>>();
+            // Cache each parsed document from the extraction pass below so the
+            // export/stitch step reuses it instead of re-reading the DWG/DXF a
+            // second time. Re-reading a DWG a second call into DwgReader.Read
+            // has been observed to throw ArgumentNullException inside
+            // ACadSharp for files that parsed fine the first time — reusing
+            // the already-parsed CadDocument avoids that failure mode too.
+            var docsBySheetId = new Dictionary<string, CadDocument>();
             // Raw entity bounds: used as a 3rd fallback when neatline layer is
             // absent AND inspection yields zero-size extents. Computed from every
             // geometric entity in the document so the stitch always has a valid
@@ -114,6 +121,7 @@ namespace MapStitcher.Business.Services
 
                     var ext = Path.GetExtension(file).ToLowerInvariant();
                     var doc = ext == ".dxf" ? DxfReader.Read(file) : DwgReader.Read(file);
+                    docsBySheetId[file] = doc;
                     var neatline = _neatlineService.Extract(doc, IndexMapLayerConfig.NeatlineLayer);
 
                     if (!neatline.IsValid)
@@ -246,7 +254,7 @@ namespace MapStitcher.Business.Services
             {
                 try
                 {
-                    StitchMasterDxf(result, outputRootPath);
+                    StitchMasterDxf(result, outputRootPath, docsBySheetId);
                 }
                 catch (Exception ex)
                 {
@@ -368,7 +376,7 @@ namespace MapStitcher.Business.Services
         // shown in the SVG Geometry Grid — using each sheet's own MinX/MaxY as the
         // normalisation origin (same as the SVG rendering) so the exported layout
         // matches what the user sees on screen exactly.
-        private void StitchMasterDxf(CadSheetGridResult result, string outputRootPath)
+        private void StitchMasterDxf(CadSheetGridResult result, string outputRootPath, Dictionary<string, CadDocument> docsBySheetId)
         {
             var stitchable = result.Sheets
                 .Where(s => s.MaxX > s.MinX && s.MaxY > s.MinY)
@@ -440,12 +448,28 @@ namespace MapStitcher.Business.Services
                     var tx = colOffset[sheet.Column] + centreOffsetX - sheet.MinX;
                     var ty = -(rowOffset[sheet.Row] + centreOffsetY) - sheet.MaxY;
 
-                    var cloned = CloneEntitiesTranslated(sheet.FilePath, tx, ty);
+                    var cloned = CloneEntitiesTranslated(sheet.FilePath, docsBySheetId, tx, ty, result.MergeErrors);
+                    var reboundCount = 0;
                     foreach (var entity in cloned)
                     {
-                        var boundEntity = RebindTables(entity, masterDocument);
-                        masterDocument.Entities.Add(boundEntity);
+                        try
+                        {
+                            var boundEntity = RebindTables(entity, masterDocument);
+                            masterDocument.Entities.Add(boundEntity);
+                            reboundCount++;
+                        }
+                        catch (Exception exEntity)
+                        {
+                            result.MergeErrors.Add(
+                                $"{sheet.FileName}: entity {entity.GetType().Name} rebind skipped — " +
+                                $"{exEntity.GetType().Name}: {exEntity.Message}");
+                        }
                     }
+
+                    if (reboundCount == 0 && cloned.Count > 0)
+                        throw new InvalidOperationException($"all {cloned.Count} cloned entities failed to rebind.");
+                    if (cloned.Count == 0)
+                        throw new InvalidOperationException("no entities could be cloned from source file (see entity errors above for detail).");
 
                     // Sheet label at top-left of the translated cell.
                     var labelX = colOffset[sheet.Column] + centreOffsetX;
@@ -469,7 +493,10 @@ namespace MapStitcher.Business.Services
                 }
                 catch (Exception ex)
                 {
-                    result.MergeErrors.Add($"{sheet.FileName}: stitch failed — {ex.Message}");
+                    var detail = $"{ex.GetType().Name}: {ex.Message}";
+                    if (ex.InnerException != null)
+                        detail += $" [inner: {ex.InnerException.GetType().Name}: {ex.InnerException.Message}]";
+                    result.MergeErrors.Add($"{sheet.FileName}: stitch failed — {detail}");
                 }
             }
 
@@ -495,23 +522,89 @@ namespace MapStitcher.Business.Services
             }
         }
 
-        private static List<Entity> CloneEntitiesTranslated(string sourceFilePath, double tx, double ty)
+        private static List<Entity> CloneEntitiesTranslated(
+            string sourceFilePath,
+            Dictionary<string, CadDocument> docsBySheetId,
+            double tx,
+            double ty,
+            List<string> entityErrors)
         {
-            var ext = Path.GetExtension(sourceFilePath).ToLowerInvariant();
-            var sourceDocument = ext == ".dxf" ? DxfReader.Read(sourceFilePath) : DwgReader.Read(sourceFilePath);
+            CadDocument sourceDocument;
 
-            var translation = CSMath.Transform.CreateTranslation(new CSMath.XYZ(tx, ty, 0));
-
-            var cloned = new List<Entity>();
-            foreach (var sourceEntity in sourceDocument.Entities.ToList())
+            if (docsBySheetId.TryGetValue(sourceFilePath, out var cachedDoc))
             {
+                // Reuse the document already parsed during the extraction pass —
+                // avoids a second DwgReader.Read call on the same file.
+                sourceDocument = cachedDoc;
+            }
+            else
+            {
+                var ext = Path.GetExtension(sourceFilePath).ToLowerInvariant();
                 try
                 {
-                    var clone = (Entity)sourceEntity.Clone();
-                    clone.ApplyTransform(translation);
-                    cloned.Add(clone);
+                    sourceDocument = ext == ".dxf" ? DxfReader.Read(sourceFilePath) : DwgReader.Read(sourceFilePath);
                 }
-                catch { /* skip entities that fail to clone */ }
+                catch (Exception exRead)
+                {
+                    throw new InvalidOperationException(
+                        $"re-read for export failed — {exRead.GetType().Name}: {exRead.Message}" +
+                        (exRead.InnerException != null ? $" [inner: {exRead.InnerException.Message}]" : ""),
+                        exRead);
+                }
+            }
+
+            var translation = CSMath.Transform.CreateTranslation(new CSMath.XYZ(tx, ty, 0));
+            var cloned = new List<Entity>();
+
+            // Deliberately NOT using .ToList() here: forcing the whole Entities
+            // sequence to materialize in one call means a single malformed
+            // entity anywhere in the document (e.g. one with an unresolved
+            // style/block reference) throws and discards every entity in the
+            // file, not just the bad one. Stepping the enumerator manually and
+            // catching around MoveNext() lets us skip just that one entity and
+            // keep going.
+            IEnumerator<Entity>? enumerator = null;
+            try
+            {
+                enumerator = sourceDocument.Entities.GetEnumerator();
+
+                while (true)
+                {
+                    Entity sourceEntity;
+                    try
+                    {
+                        if (!enumerator.MoveNext())
+                            break;
+                        sourceEntity = enumerator.Current;
+                    }
+                    catch (Exception exMove)
+                    {
+                        entityErrors.Add(
+                            $"{Path.GetFileName(sourceFilePath)}: entity enumeration error — " +
+                            $"{exMove.GetType().Name}: {exMove.Message}");
+                        continue; // try to keep advancing past the bad entry
+                    }
+
+                    if (sourceEntity == null)
+                        continue;
+
+                    try
+                    {
+                        var clone = (Entity)sourceEntity.Clone();
+                        clone.ApplyTransform(translation);
+                        cloned.Add(clone);
+                    }
+                    catch (Exception exClone)
+                    {
+                        entityErrors.Add(
+                            $"{Path.GetFileName(sourceFilePath)}: entity {sourceEntity.GetType().Name} " +
+                            $"(handle {sourceEntity.Handle}) skipped — {exClone.GetType().Name}: {exClone.Message}");
+                    }
+                }
+            }
+            finally
+            {
+                enumerator?.Dispose();
             }
 
             return cloned;
@@ -525,7 +618,7 @@ namespace MapStitcher.Business.Services
             visitedBlocks ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             // Ensure Layer exists in master
-            var layerName = entity.Layer?.Name ?? "0";
+            var layerName = string.IsNullOrEmpty(entity.Layer?.Name) ? "0" : entity.Layer.Name;
             var masterLayer = masterDocument.Layers.FirstOrDefault(l => l.Name == layerName);
             if (masterLayer == null)
             {
@@ -547,7 +640,9 @@ namespace MapStitcher.Business.Services
 
             if (entity is Insert sourceInsert && sourceInsert.Block != null)
             {
-                var blockName = sourceInsert.Block.Name;
+                var blockName = string.IsNullOrEmpty(sourceInsert.Block.Name)
+                    ? $"UNNAMED_BLOCK_{Guid.NewGuid():N}"
+                    : sourceInsert.Block.Name;
 
                 // Copy block definition into master once
                 if (!masterDocument.BlockRecords.Any(b => b.Name == blockName) && visitedBlocks.Add(blockName))
@@ -555,8 +650,12 @@ namespace MapStitcher.Business.Services
                     try
                     {
                         var clonedBlock = (BlockRecord)sourceInsert.Block.Clone();
+                        clonedBlock.Name = blockName;
                         foreach (var nestedEntity in clonedBlock.Entities.ToList())
-                            RebindTables(nestedEntity, masterDocument, visitedBlocks);
+                        {
+                            try { RebindTables(nestedEntity, masterDocument, visitedBlocks); }
+                            catch { /* skip malformed nested entity, keep block */ }
+                        }
                         masterDocument.BlockRecords.Add(clonedBlock);
                     }
                     catch { }

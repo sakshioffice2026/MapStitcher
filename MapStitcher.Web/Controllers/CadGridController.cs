@@ -36,6 +36,9 @@ namespace MapStitcher.Web.Controllers
         [HttpGet]
         public IActionResult Index()
         {
+            if (TempData["Error"] is string error)
+                ViewBag.Error = error;
+
             return View();
         }
 
