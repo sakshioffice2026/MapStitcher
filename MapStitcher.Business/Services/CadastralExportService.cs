@@ -25,9 +25,6 @@ namespace MapStitcher.Business.Services
             _uploadRootPath = uploadRootPath;
         }
 
-        // Exports every sheet currently in the project — merged sheets use their
-        // saved alignment transform, unmerged/base sheets export at native coords.
-        // No completeness requirement: works with 1 sheet or N sheets.
         public async Task<string> ExportProjectAsync(int projectId, string outputRootPath)
         {
             var sheets = await _sheetRepo.GetByProjectIdAsync(projectId);
@@ -84,12 +81,6 @@ namespace MapStitcher.Business.Services
             return fullPath;
         }
 
-        // Isolated download action. Full-entity clone (lines, arcs, text,
-        // polylines, blocks/inserts, hatches, everything) from each sheet's
-        // source file, translated by its persisted OffsetX/OffsetY. Does NOT
-        // depend on SheetBoundary polygon extraction succeeding, so a sheet
-        // whose boundary is drawn with unsupported entity types for the
-        // polygon pass still exports its real geometry.
         public async Task<string> ExportMasterDxfAsync(int projectId, string outputRootPath)
         {
             var sheets = await _sheetRepo.GetByProjectIdAsync(projectId);
@@ -151,11 +142,12 @@ namespace MapStitcher.Business.Services
             var ext = Path.GetExtension(fullPath).ToLowerInvariant();
             var sourceDocument = ext == ".dxf" ? DxfReader.Read(fullPath) : DwgReader.Read(fullPath);
 
-            // Use the persisted merge transform (TransformTranslateX/Y), which is
-            // set by CadastralMergeService after stitching. OffsetX/OffsetY are only
-            // the jigsaw-grid preview offsets and are NOT the real alignment values.
-            double tx = sheet.TransformTranslateX;
-            double ty = sheet.TransformTranslateY;
+            // MergeSheets arranges the project into a non-overlapping grid and
+            // persists that layout in OffsetX/OffsetY. The previous implementation
+            // used TransformTranslateX/Y here, which belongs to the tie-point stitch
+            // pipeline and could contain stale values from an earlier stitch.
+            double tx = sheet.OffsetX;
+            double ty = sheet.OffsetY;
 
             var translation = CSMath.Transform.CreateTranslation(
                 new CSMath.XYZ(tx, ty, 0));
