@@ -2,6 +2,9 @@
 using ACadSharp;
 using ACadSharp.Entities;
 using ACadSharp.IO;
+using ACadSharp.Tables;
+using System;
+using System.Linq;
 using MapStitcher.Business.Contracts;
 using MapStitcher.Model;
 
@@ -232,7 +235,10 @@ namespace MapStitcher.Business.Services
 
                     var cloned = CloneEntitiesTranslated(sheet.FilePath, tx, ty);
                     foreach (var entity in cloned)
-                        masterDocument.Entities.Add(entity);
+                    {
+                        var boundEntity = RebindTables(entity, masterDocument);
+                        masterDocument.Entities.Add(boundEntity);
+                    }
 
                     var label = new TextEntity
                     {
@@ -243,6 +249,7 @@ namespace MapStitcher.Business.Services
                             -(sheet.Row * cellHeight) + 5,
                             0)
                     };
+                    RebindTables(label, masterDocument);
                     masterDocument.Entities.Add(label);
 
                     stitchedCount++;
@@ -273,6 +280,88 @@ namespace MapStitcher.Business.Services
             {
                 result.MergeErrors.Add($"Failed to write master DXF: {ex.Message}");
             }
+        }
+
+        // Cloned entities still reference Layer/LineType/BlockRecord objects
+        // that belong to the *source* CadDocument. masterDocument's own tables
+        // have no entry for those objects, so DxfWriter.Write succeeds but the
+        // written references are dangling — most viewers render nothing.
+        // Re-point each entity at equivalent records that actually belong to
+        // masterDocument, creating them if missing. Insert.Block is read-only,
+        // so an Insert is rebuilt against the master block record rather than
+        // mutated; callers must use the returned entity.
+        private static Entity RebindTables(Entity entity, CadDocument masterDocument, HashSet<string> visitedBlocks = null)
+        {
+            visitedBlocks ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            var layerName = entity.Layer?.Name;
+            if (!string.IsNullOrEmpty(layerName))
+            {
+                var masterLayer = masterDocument.Layers.FirstOrDefault(l => l.Name == layerName);
+                if (masterLayer == null)
+                {
+                    masterLayer = new Layer(layerName);
+                    masterDocument.Layers.Add(masterLayer);
+                }
+                entity.Layer = masterLayer;
+            }
+
+            var lineTypeName = entity.LineType?.Name;
+            if (!string.IsNullOrEmpty(lineTypeName))
+            {
+                var masterLineType = masterDocument.LineTypes.FirstOrDefault(l => l.Name == lineTypeName);
+                if (masterLineType != null)
+                    entity.LineType = masterLineType;
+            }
+
+            // Most of the visible geometry (borders, title-block symbols,
+            // north arrows, etc.) lives inside block definitions referenced
+            // via INSERT, not as top-level entities. Without copying the
+            // referenced BlockRecord into masterDocument, an Insert renders
+            // nothing — this is the primary cause of a fully blank stitch.
+            if (entity is Insert sourceInsert && sourceInsert.Block != null)
+            {
+                var blockName = sourceInsert.Block.Name;
+                var masterBlock = masterDocument.BlockRecords.FirstOrDefault(b => b.Name == blockName);
+
+                if (masterBlock == null && visitedBlocks.Add(blockName))
+                {
+                    masterBlock = (BlockRecord)sourceInsert.Block.Clone();
+                    foreach (var nestedEntity in masterBlock.Entities.ToList())
+                        RebindTables(nestedEntity, masterDocument, visitedBlocks);
+
+                    masterDocument.BlockRecords.Add(masterBlock);
+                }
+
+                masterBlock ??= masterDocument.BlockRecords.FirstOrDefault(b => b.Name == blockName);
+
+                var rebuilt = new Insert(masterBlock)
+                {
+                    InsertPoint = sourceInsert.InsertPoint,
+                    Normal = sourceInsert.Normal,
+                    Rotation = sourceInsert.Rotation,
+                    XScale = sourceInsert.XScale,
+                    YScale = sourceInsert.YScale,
+                    ZScale = sourceInsert.ZScale,
+                    ColumnCount = sourceInsert.ColumnCount,
+                    ColumnSpacing = sourceInsert.ColumnSpacing,
+                    RowCount = sourceInsert.RowCount,
+                    RowSpacing = sourceInsert.RowSpacing,
+                    Layer = entity.Layer,
+                    LineType = entity.LineType,
+                    Color = sourceInsert.Color,
+                    LineWeight = sourceInsert.LineWeight,
+                    Transparency = sourceInsert.Transparency,
+                    IsInvisible = sourceInsert.IsInvisible
+                };
+
+                foreach (var attribute in sourceInsert.Attributes)
+                    rebuilt.Attributes.Add(attribute);
+
+                return rebuilt;
+            }
+
+            return entity;
         }
 
         private static List<Entity> CloneEntitiesTranslated(string sourceFilePath, double tx, double ty)

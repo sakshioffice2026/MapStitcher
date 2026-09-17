@@ -1,5 +1,7 @@
 
 @model MapStitcher.Model.CadSheetGridResult
+@using System.Globalization
+@using System.Net
 
 @{
     ViewData["Title"] = "CAD Sheet Grid";
@@ -16,6 +18,54 @@
         .GroupBy(x => (x.Row, x.Column))
         .Where(g => g.Count() > 1)
         .ToList();
+
+    // --- Geometry Grid: sheets laid out at their real relative size/shape
+    // instead of uniform boxes, using each sheet's actual CAD Width/Height. ---
+    var geoRowCount = Model.RowCount;
+    var geoColCount = Model.ColumnCount;
+
+    var realWidths = Model.Sheets.Select(s => s.Width).Where(w => w > 0).ToList();
+    var realHeights = Model.Sheets.Select(s => s.Height).Where(h => h > 0).ToList();
+    var geoDefaultCell = Math.Max(
+        realWidths.Count > 0 ? realWidths.Average() : 400.0,
+        realHeights.Count > 0 ? realHeights.Average() : 400.0);
+
+    var geoColumnWidths = new double[Math.Max(geoColCount, 1)];
+    var geoRowHeights = new double[Math.Max(geoRowCount, 1)];
+
+    for (var c = 0; c < geoColCount; c++)
+    {
+        var w = Model.Sheets.Where(s => s.Column == c).Select(s => s.Width).DefaultIfEmpty(0).Max();
+        geoColumnWidths[c] = w > 0 ? w : geoDefaultCell;
+    }
+
+    for (var r = 0; r < geoRowCount; r++)
+    {
+        var h = Model.Sheets.Where(s => s.Row == r).Select(s => s.Height).DefaultIfEmpty(0).Max();
+        geoRowHeights[r] = h > 0 ? h : geoDefaultCell;
+    }
+
+    const double geoGap = 25.0;
+
+    var geoColOffsets = new double[Math.Max(geoColCount, 1)];
+    for (var c = 1; c < geoColCount; c++)
+        geoColOffsets[c] = geoColOffsets[c - 1] + geoColumnWidths[c - 1] + geoGap;
+
+    var geoRowOffsets = new double[Math.Max(geoRowCount, 1)];
+    for (var r = 1; r < geoRowCount; r++)
+        geoRowOffsets[r] = geoRowOffsets[r - 1] + geoRowHeights[r - 1] + geoGap;
+
+    var geoTotalWidthUnits = geoColCount > 0 ? geoColOffsets[geoColCount - 1] + geoColumnWidths[geoColCount - 1] : 0;
+    var geoTotalHeightUnits = geoRowCount > 0 ? geoRowOffsets[geoRowCount - 1] + geoRowHeights[geoRowCount - 1] : 0;
+
+    const double geoTargetPxWidth = 1200.0;
+    var geoScale = geoTotalWidthUnits > 0 ? geoTargetPxWidth / geoTotalWidthUnits : 1.0;
+    geoScale = Math.Max(0.02, Math.Min(geoScale, 4.0));
+
+    var geoSvgWidth = geoTotalWidthUnits * geoScale;
+    var geoSvgHeight = geoTotalHeightUnits * geoScale;
+
+    string GeoNum(double v) => v.ToString("F2", CultureInfo.InvariantCulture);
 }
 
 <style>
@@ -156,6 +206,53 @@
         border-color: #e0a800;
         background: #fff8e6;
         color: #8a6500;
+    }
+
+    .geometry-grid-wrapper {
+        width: 100%;
+        overflow: auto;
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 8px;
+        background: #f5f6f8;
+    }
+
+    .geometry-svg-sheet-rect {
+        fill: #ffffff;
+        stroke: #3b6fce;
+        stroke-width: 1.5;
+    }
+
+    .geometry-svg-missing-rect {
+        fill: #fff8e6;
+        stroke: #e0a800;
+        stroke-width: 1.5;
+        stroke-dasharray: 6 4;
+    }
+
+    .geometry-svg-empty-rect {
+        fill: #fafafa;
+        stroke: #cccccc;
+        stroke-width: 1;
+        stroke-dasharray: 4 4;
+    }
+
+    .geometry-svg-label {
+        font-size: 12px;
+        font-family: sans-serif;
+        fill: #222222;
+    }
+
+    .geometry-svg-sublabel {
+        font-size: 10px;
+        font-family: sans-serif;
+        fill: #666666;
+    }
+
+    .geometry-svg-missing-label {
+        font-size: 12px;
+        font-family: sans-serif;
+        fill: #8a6500;
     }
 
     .errors-section,
@@ -343,6 +440,67 @@
 
             </div>
 
+        </div>
+
+    </section>
+
+    <section class="grid-section">
+
+        <h2>Geometry Grid</h2>
+
+        <div class="grid-section-description">
+            Same row/column arrangement as above, but each sheet is drawn at
+            its real relative width and height instead of a uniform box.
+        </div>
+
+        <div class="geometry-grid-wrapper">
+            <svg width="@GeoNum(geoSvgWidth)"
+                 height="@GeoNum(geoSvgHeight)"
+                 viewBox="0 0 @GeoNum(geoSvgWidth) @GeoNum(geoSvgHeight)"
+                 xmlns="http://www.w3.org/2000/svg">
+
+                @for (var row = 0; row < geoRowCount; row++)
+                {
+                    @for (var column = 0; column < geoColCount; column++)
+                    {
+                        var cellX = geoColOffsets[column] * geoScale;
+                        var cellY = geoRowOffsets[row] * geoScale;
+                        var cellW = geoColumnWidths[column] * geoScale;
+                        var cellH = geoRowHeights[row] * geoScale;
+
+                        if (sheetsByPosition.TryGetValue((row, column), out var geoSheet))
+                        {
+                            var rectW = geoSheet.Width * geoScale;
+                            var rectH = geoSheet.Height * geoScale;
+                            var rectX = cellX + (cellW - rectW) / 2;
+                            var rectY = cellY + (cellH - rectH) / 2;
+
+                            <rect class="geometry-svg-sheet-rect"
+                                  x="@GeoNum(rectX)" y="@GeoNum(rectY)"
+                                  width="@GeoNum(rectW)" height="@GeoNum(rectH)" />
+
+                            @Html.Raw($"<text class=\"geometry-svg-label\" x=\"{GeoNum(rectX + 6)}\" y=\"{GeoNum(rectY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoSheet.SheetNumber)}</text>")
+
+                            @Html.Raw($"<text class=\"geometry-svg-sublabel\" x=\"{GeoNum(rectX + 6)}\" y=\"{GeoNum(rectY + 30)}\">{WebUtility.HtmlEncode(geoSheet.Width.ToString("F0") + " x " + geoSheet.Height.ToString("F0"))}</text>")
+                        }
+                        else if (missingByPosition.TryGetValue((row, column), out var geoMissing))
+                        {
+                            <rect class="geometry-svg-missing-rect"
+                                  x="@GeoNum(cellX)" y="@GeoNum(cellY)"
+                                  width="@GeoNum(cellW)" height="@GeoNum(cellH)" />
+
+                            @Html.Raw($"<text class=\"geometry-svg-missing-label\" x=\"{GeoNum(cellX + 6)}\" y=\"{GeoNum(cellY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoMissing.SheetNumber + " not uploaded")}</text>")
+                        }
+                        else
+                        {
+                            <rect class="geometry-svg-empty-rect"
+                                  x="@GeoNum(cellX)" y="@GeoNum(cellY)"
+                                  width="@GeoNum(cellW)" height="@GeoNum(cellH)" />
+                        }
+                    }
+                }
+
+            </svg>
         </div>
 
     </section>
