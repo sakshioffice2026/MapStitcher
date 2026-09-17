@@ -69,6 +69,11 @@ namespace MapStitcher.Business.Services
             var neatlinesBySheetId = new Dictionary<string, NeatlineExtent>();
             var inspectionsBySheetId = new Dictionary<string, CadCoordinateInspectionResult>();
             var boundaryPolygonsBySheetId = new Dictionary<string, List<List<(double X, double Y)>>>();
+            // Raw entity bounds: used as a 3rd fallback when neatline layer is
+            // absent AND inspection yields zero-size extents. Computed from every
+            // geometric entity in the document so the stitch always has a valid
+            // bounding box even on files that have no Poly_Survey_Bndry layer.
+            var rawBoundsByFile = new Dictionary<string, (double minX, double minY, double maxX, double maxY)?>();
 
             foreach (var file in files)
             {
@@ -115,6 +120,10 @@ namespace MapStitcher.Business.Services
                         result.MergeErrors.Add($"{Path.GetFileName(file)}: no valid neatline on layer '{IndexMapLayerConfig.NeatlineLayer}', size unknown.");
 
                     neatlinesBySheetId[file] = neatline;
+
+                    // Raw entity bounds: pre-compute now while the doc is in memory.
+                    // Used as a 3rd fallback in the Select lambda below.
+                    rawBoundsByFile[file] = ComputeRawEntityBounds(doc);
 
                     // Extract actual polygon shapes from Poly_Survey_Bndry for Geometry Grid rendering.
                     boundaryPolygonsBySheetId[file] = ExtractBoundaryPolygons(doc, IndexMapLayerConfig.NeatlineLayer);
@@ -175,6 +184,19 @@ namespace MapStitcher.Business.Services
                     maxX = inspection.MaxX;
                     maxY = inspection.MaxY;
                 }
+                else if (rawBoundsByFile.TryGetValue(t.SheetId, out var rb) && rb.HasValue
+                    && (rb.Value.maxX - rb.Value.minX) > 0
+                    && (rb.Value.maxY - rb.Value.minY) > 0)
+                {
+                    // 3rd fallback: raw entity extent — used when Poly_Survey_Bndry is
+                    // absent and inspection gives zero-size bounds. Ensures the sheet
+                    // still participates in the DXF stitch instead of being silently excluded.
+                    minX = rb.Value.minX;
+                    minY = rb.Value.minY;
+                    maxX = rb.Value.maxX;
+                    maxY = rb.Value.maxY;
+                    result.MergeErrors.Add($"{Path.GetFileName(t.SheetId)}: neatline and inspection bounds invalid — using raw entity bounds as fallback ({minX:F0},{minY:F0} → {maxX:F0},{maxY:F0}).");
+                }
                 else
                 {
                     minX = minY = maxX = maxY = 0;
@@ -233,6 +255,61 @@ namespace MapStitcher.Business.Services
             }
 
             return result;
+        }
+
+        // Computes a bounding box from every geometric entity in the document —
+        // polylines, lines, circles, inserts, and text — without filtering by layer.
+        // Returns null when the document contains no measurable coordinates.
+        private static (double minX, double minY, double maxX, double maxY)? ComputeRawEntityBounds(CadDocument doc)
+        {
+            double minX = double.MaxValue, minY = double.MaxValue;
+            double maxX = double.MinValue, maxY = double.MinValue;
+            bool hasPoints = false;
+
+            void Expand(double x, double y)
+            {
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
+                hasPoints = true;
+            }
+
+            foreach (var entity in FlattenDocumentEntities(doc.Entities, 0))
+            {
+                try
+                {
+                    switch (entity)
+                    {
+                        case LwPolyline lw:
+                            foreach (var v in lw.Vertices) Expand(v.Location.X, v.Location.Y);
+                            break;
+                        case Polyline2D p2d:
+                            foreach (var v in p2d.Vertices) Expand(v.Location.X, v.Location.Y);
+                            break;
+                        case Line l:
+                            Expand(l.StartPoint.X, l.StartPoint.Y);
+                            Expand(l.EndPoint.X, l.EndPoint.Y);
+                            break;
+                        case Circle c:
+                            Expand(c.Center.X - c.Radius, c.Center.Y - c.Radius);
+                            Expand(c.Center.X + c.Radius, c.Center.Y + c.Radius);
+                            break;
+                        case TextEntity t:
+                            Expand(t.InsertPoint.X, t.InsertPoint.Y);
+                            break;
+                        case MText mt:
+                            Expand(mt.InsertPoint.X, mt.InsertPoint.Y);
+                            break;
+                        case Insert ins:
+                            Expand(ins.InsertPoint.X, ins.InsertPoint.Y);
+                            break;
+                    }
+                }
+                catch { /* skip bad entities */ }
+            }
+
+            return hasPoints ? (minX, minY, maxX, maxY) : null;
         }
 
         // Extracts all closed polygon rings from the given layer (Poly_Survey_Bndry).

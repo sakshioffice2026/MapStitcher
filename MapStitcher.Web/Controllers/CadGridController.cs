@@ -100,7 +100,22 @@ namespace MapStitcher.Web.Controllers
                         "exports",
                         "cadgrid");
 
+                    // Persist a copy of the uploaded files under a session GUID so the
+                    // user can re-export the geometry grid DXF without re-uploading.
+                    // Session folders older than 24 h are cleaned up opportunistically.
+                    var sessionId = Guid.NewGuid().ToString("N");
+                    var sessionFolder = Path.Combine(mergeOutputRoot, "sessions", sessionId);
+                    Directory.CreateDirectory(sessionFolder);
+                    CleanOldSessions(Path.Combine(mergeOutputRoot, "sessions"), TimeSpan.FromHours(24));
+
+                    foreach (var f in Directory.GetFiles(tempDirectory))
+                    {
+                        try { System.IO.File.Copy(f, Path.Combine(sessionFolder, Path.GetFileName(f))); }
+                        catch { /* non-fatal */ }
+                    }
+
                     var result = await _arrangementService.ArrangeAsync(tempDirectory, mergeOutputRoot);
+                    result.SessionId = sessionId;
 
                     if (result.SheetCount == 0 && skipped.Count == files.Count)
                     {
@@ -138,6 +153,69 @@ namespace MapStitcher.Web.Controllers
             {
                 ViewBag.Error = $"Arrangement failed: {ex.Message}";
                 return View();
+            }
+        }
+
+        // Re-export the geometry grid DXF from persistent session files.
+        // Called by the "Export Merged Sheets" button on the Result page when
+        // the first-attempt stitch failed (MergeOutputFileName was null) or when
+        // the user returns to the page and wants a fresh download.
+        [HttpGet]
+        public async Task<IActionResult> ExportGeometryGrid(string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId))
+                return BadRequest("Session ID is required.");
+
+            // Path.GetFileName strips any directory traversal characters.
+            var safeId = Path.GetFileName(sessionId);
+            var sessionFolder = Path.Combine(
+                _environment.WebRootPath, "exports", "cadgrid", "sessions", safeId);
+
+            if (!Directory.Exists(sessionFolder))
+                return NotFound("Session files not found or expired. Please re-upload your files.");
+
+            var mergeOutputRoot = Path.Combine(_environment.WebRootPath, "exports", "cadgrid");
+
+            try
+            {
+                var result = await _arrangementService.ArrangeAsync(sessionFolder, mergeOutputRoot);
+
+                if (string.IsNullOrWhiteSpace(result.MergeOutputFileName))
+                {
+                    var diagnostics = result.MergeErrors.Count > 0
+                        ? string.Join("; ", result.MergeErrors.TakeLast(5))
+                        : "No sheets with valid geometry extents were found.";
+                    TempData["Error"] = $"Export failed: {diagnostics}";
+                    return RedirectToAction("Index");
+                }
+
+                var fullPath = Path.Combine(mergeOutputRoot, result.MergeOutputFileName);
+                var fileBytes = await System.IO.File.ReadAllBytesAsync(fullPath);
+                return File(fileBytes, "application/dxf", result.MergeOutputFileName);
+            }
+            catch (Exception ex)
+            {
+                TempData["Error"] = $"Export failed: {ex.Message}";
+                return RedirectToAction("Index");
+            }
+        }
+
+        // Deletes session subdirectories older than the given age.
+        // Called opportunistically on each upload to prevent unbounded disk growth.
+        private static void CleanOldSessions(string sessionsRoot, TimeSpan maxAge)
+        {
+            if (!Directory.Exists(sessionsRoot))
+                return;
+
+            var cutoff = DateTime.UtcNow - maxAge;
+            foreach (var dir in Directory.GetDirectories(sessionsRoot))
+            {
+                try
+                {
+                    if (Directory.GetCreationTimeUtc(dir) < cutoff)
+                        Directory.Delete(dir, recursive: true);
+                }
+                catch { /* non-fatal */ }
             }
         }
 

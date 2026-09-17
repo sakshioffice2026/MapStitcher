@@ -536,19 +536,49 @@
         <section class="errors-section" style="border-color:#3b6fce; background:#f0f4ff;">
             <h2 style="color:#3b6fce;">⬇ Export Geometry Grid</h2>
             <p style="margin:0 0 12px 0; color:#555;">Full geometry of all placed sheets tiled in the same grid layout shown above.</p>
-            <a asp-controller="CadGrid"
-               asp-action="DownloadMerged"
-               asp-route-fileName="@Model.MergeOutputFileName"
-               style="display:inline-block;padding:10px 22px;background:#3b6fce;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">
-                ⬇ Download Geometry Grid DXF
-            </a>
+            <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:center;">
+                <a asp-controller="CadGrid"
+                   asp-action="DownloadMerged"
+                   asp-route-fileName="@Model.MergeOutputFileName"
+                   style="display:inline-block;padding:10px 22px;background:#3b6fce;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;">
+                    ⬇ Download Geometry Grid DXF
+                </a>
+                @if (!string.IsNullOrWhiteSpace(Model.SessionId))
+                {
+                    <a asp-controller="CadGrid"
+                       asp-action="ExportGeometryGrid"
+                       asp-route-sessionId="@Model.SessionId"
+                       style="display:inline-block;padding:10px 22px;background:#1a7a4a;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;"
+                       title="Re-generate and download the merged DXF from your uploaded files">
+                        ⬇ Export Merged Sheets
+                    </a>
+                }
+            </div>
         </section>
     }
     else
     {
-        <section class="errors-section" style="border-color:#ccc; background:#fafafa;">
-            <h2 style="color:#999;">Export Geometry Grid</h2>
-            <p style="margin:0; color:#aaa;">DXF export was not generated. Re-upload the files to trigger export.</p>
+        <section class="errors-section" style="border-color:#e0a800; background:#fff8e6;">
+            <h2 style="color:#8a6500;">⚠ Export Geometry Grid</h2>
+            <p style="margin:0 0 12px 0; color:#8a6500;">
+                DXF export was not generated during upload — sheets may be missing a valid
+                <code>Poly_Survey_Bndry</code> layer or had no recognised geometry extents.
+                Use the button below to attempt export from your uploaded files.
+            </p>
+            @if (!string.IsNullOrWhiteSpace(Model.SessionId))
+            {
+                <a asp-controller="CadGrid"
+                   asp-action="ExportGeometryGrid"
+                   asp-route-sessionId="@Model.SessionId"
+                   style="display:inline-block;padding:10px 22px;background:#1a7a4a;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;"
+                   title="Re-attempt DXF export using raw entity bounds as fallback">
+                    ⬇ Export Merged Sheets
+                </a>
+            }
+            else
+            {
+                <p style="margin:0; color:#aaa; font-size:13px;">Session expired — please re-upload your files to generate the export.</p>
+            }
         </section>
     }
 
