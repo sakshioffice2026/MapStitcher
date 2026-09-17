@@ -219,7 +219,8 @@ namespace MapStitcher.Business.Services
                 ["Top"] = new(),
                 ["Bottom"] = new(),
                 ["Left"] = new(),
-                ["Right"] = new()
+                ["Right"] = new(),
+                ["CenterFallback"] = new()
             };
 
             /*
@@ -311,6 +312,14 @@ namespace MapStitcher.Business.Services
 
                     (1, 2) => "Right",
 
+                    // Observed authoring pattern: the sheet's own number is
+                    // stamped in the bottom-right third (row=0,col=2), directly
+                    // below the east-neighbour number at (row=1,col=2), instead
+                    // of the geometric centre (1,1). Captured separately and
+                    // only used if the canonical Center cell is empty, so it
+                    // never overrides a genuine (1,1) match.
+                    (0, 2) => "CenterFallback",
+
                     _ => null
                 };
 
@@ -335,6 +344,10 @@ namespace MapStitcher.Business.Services
                 Pick(
                     cellTexts["Center"],
                     "Center",
+                    result.Warnings)
+                ?? Pick(
+                    cellTexts["CenterFallback"],
+                    "CenterFallback",
                     result.Warnings);
 
             result.TopSheetNumber =

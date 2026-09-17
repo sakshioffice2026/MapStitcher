@@ -5,6 +5,23 @@ namespace MapStitcher.Web.Controllers
 {
     public class CadGridController : Controller
     {
+        private static string SanitizeFileNameSegment(string value)
+        {
+            if (string.IsNullOrWhiteSpace(value))
+                return "sheet";
+
+            var invalid = Path.GetInvalidFileNameChars();
+            var chars = value
+                .Where(c => !invalid.Contains(c) && c != '_')
+                .ToArray();
+
+            var cleaned = new string(chars).Trim();
+
+            return string.IsNullOrWhiteSpace(cleaned)
+                ? "sheet"
+                : cleaned;
+        }
+
         private readonly ISheetArrangementOrchestrator _arrangementService;
         private readonly IWebHostEnvironment _environment;
 
@@ -62,9 +79,12 @@ namespace MapStitcher.Web.Controllers
                             continue;
                         }
 
+                        var originalStem = SanitizeFileNameSegment(
+                            Path.GetFileNameWithoutExtension(file.FileName));
+
                         var tempFilePath = Path.Combine(
                             tempDirectory,
-                            $"{Guid.NewGuid():N}{extension}");
+                            $"{Guid.NewGuid():N}__{originalStem}{extension}");
 
                         await using var stream = new FileStream(
                             tempFilePath,

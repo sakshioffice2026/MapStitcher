@@ -83,14 +83,27 @@ namespace MapStitcher.Business.Services
             // ---------------------------------------------------------------
             var componentAnchors = new List<string>();
 
+            // A single component can never span more cells (in any one
+            // direction) than there are input sheets, so spacing anchors
+            // this far apart along X guarantees two different components'
+            // local coordinate spaces can never overlap while they still
+            // share the single global `positions` dictionary during growth.
+            // PackComponents() discards these raw values afterwards, re-
+            // deriving each component's final offset from its own bounding
+            // box, so only uniqueness (not the actual magnitude) matters.
+            int anchorSpacing = (inputs.Count * 2) + 10;
+            int anchorSeedIndex = 0;
+
             foreach (var seed in inputs)
             {
                 if (positions.ContainsKey(seed.SheetId))
                     continue;
 
-                // New component: start it at its own local origin. Absolute
-                // offsets between components are applied after all growth.
-                positions[seed.SheetId] = (0, 0);
+                // New component: start it at its own local origin, offset
+                // far enough from every previously seeded component that
+                // the two can't collide before PackComponents() runs.
+                positions[seed.SheetId] = (anchorSeedIndex * anchorSpacing, 0);
+                anchorSeedIndex++;
                 reciprocalPlacement.Add(seed.SheetId);
                 componentAnchors.Add(seed.SheetId);
 
