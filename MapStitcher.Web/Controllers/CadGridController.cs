@@ -216,6 +216,100 @@ namespace MapStitcher.Web.Controllers
                 "dwg");
         }
 
+        [HttpGet]
+        public async Task<IActionResult> ExportVillageStitchedMap(
+            string sessionId)
+        {
+            if (string.IsNullOrWhiteSpace(sessionId))
+                return BadRequest("Session ID is required.");
+
+            var safeId = Path.GetFileName(sessionId);
+
+            if (!string.Equals(
+                    safeId,
+                    sessionId,
+                    StringComparison.Ordinal))
+            {
+                return BadRequest("Invalid session ID.");
+            }
+
+            var sessionFolder = Path.Combine(
+                _environment.WebRootPath,
+                "exports",
+                "cadgrid",
+                "sessions",
+                safeId);
+
+            if (!Directory.Exists(sessionFolder))
+            {
+                return NotFound(
+                    "Session files not found or expired. " +
+                    "Please re-upload your files.");
+            }
+
+            var mergeOutputRoot = Path.Combine(
+                _environment.WebRootPath,
+                "exports",
+                "cadgrid");
+
+            try
+            {
+                var result =
+                    await _arrangementService.ArrangeAsync(
+                        sessionFolder,
+                        mergeOutputRoot);
+
+                result.SessionId = safeId;
+
+                await _cadGridService.MergeVillageAlignedGridAsync(
+                    result,
+                    mergeOutputRoot);
+
+                if (string.IsNullOrWhiteSpace(
+                        result.MergeOutputFileName))
+                {
+                    return BuildExportError(result);
+                }
+
+                var dxfPath = Path.Combine(
+                    mergeOutputRoot,
+                    result.MergeOutputFileName);
+
+                if (!System.IO.File.Exists(dxfPath))
+                {
+                    return BuildExportError(
+                        result,
+                        "The stitched village map file was not created.");
+                }
+
+                var fileBytes =
+                    await System.IO.File.ReadAllBytesAsync(dxfPath);
+
+                var extension =
+                    Path.GetExtension(result.MergeOutputFileName);
+
+                var contentType =
+                    string.Equals(
+                        extension,
+                        ".dwg",
+                        StringComparison.OrdinalIgnoreCase)
+                        ? "application/acad"
+                        : "application/dxf";
+
+                return File(
+                    fileBytes,
+                    contentType,
+                    result.MergeOutputFileName);
+            }
+            catch (Exception ex)
+            {
+                TempData["Error"] =
+                    $"Stitched village map export failed: {ex.Message}";
+
+                return RedirectToAction("Index");
+            }
+        }
+
         private async Task<IActionResult> ExportSessionFile(
             string sessionId,
             string format)

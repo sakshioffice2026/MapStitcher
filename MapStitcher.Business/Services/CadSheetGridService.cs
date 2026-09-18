@@ -4,6 +4,7 @@ using ACadSharp.IO;
 using CSMath;
 using MapStitcher.Business.Contracts;
 using MapStitcher.Model;
+using NetTopologySuite.Geometries;
 using System;
 using System.Collections.Generic;
 using System.IO;
@@ -557,6 +558,519 @@ namespace MapStitcher.Business.Services
             }
 
             return Task.CompletedTask;
+        }
+
+        public Task MergeVillageAlignedGridAsync(
+            CadSheetGridResult result,
+            string outputDirectory)
+        {
+            if (result == null)
+            {
+                throw new ArgumentNullException(
+                    nameof(result));
+            }
+
+            if (string.IsNullOrWhiteSpace(
+                    outputDirectory))
+            {
+                throw new ArgumentException(
+                    "Output directory is required.",
+                    nameof(outputDirectory));
+            }
+
+            if (result.Sheets == null ||
+                result.Sheets.Count == 0)
+            {
+                result.MergeErrors.Add(
+                    "No sheets to merge.");
+
+                return Task.CompletedTask;
+            }
+
+            // --- Step 1: grid layout ------------------------------------
+            // Same column/row sizing as the plain grid merge: every placed
+            // sheet snaps into the cell matching its arranged Row/Column so
+            // adjacent parcel lines line up across the stitched map.
+            var columnCount =
+                result.ColumnCount > 0
+                    ? result.ColumnCount
+                    : result.Sheets.Max(x => x.Column) + 1;
+
+            var rowCount =
+                result.RowCount > 0
+                    ? result.RowCount
+                    : result.Sheets.Max(x => x.Row) + 1;
+
+            var columnWidths =
+                new double[columnCount];
+
+            var rowHeights =
+                new double[rowCount];
+
+            foreach (var sheet in result.Sheets)
+            {
+                var width =
+                    sheet.MaxX > sheet.MinX
+                        ? sheet.MaxX - sheet.MinX
+                        : DefaultCellSize;
+
+                var height =
+                    sheet.MaxY > sheet.MinY
+                        ? sheet.MaxY - sheet.MinY
+                        : DefaultCellSize;
+
+                if (sheet.Column >= 0 &&
+                    sheet.Column < columnCount)
+                {
+                    columnWidths[sheet.Column] =
+                        Math.Max(
+                            columnWidths[sheet.Column],
+                            width);
+                }
+
+                if (sheet.Row >= 0 &&
+                    sheet.Row < rowCount)
+                {
+                    rowHeights[sheet.Row] =
+                        Math.Max(
+                            rowHeights[sheet.Row],
+                            height);
+                }
+            }
+
+            var columnOffsets =
+                new double[columnCount];
+
+            for (int i = 1; i < columnCount; i++)
+            {
+                columnOffsets[i] =
+                    columnOffsets[i - 1] +
+                    columnWidths[i - 1] +
+                    CellGap;
+            }
+
+            var rowOffsets =
+                new double[rowCount];
+
+            for (int i = 1; i < rowCount; i++)
+            {
+                rowOffsets[i] =
+                    rowOffsets[i - 1] +
+                    rowHeights[i - 1] +
+                    CellGap;
+            }
+
+            // --- Step 2: place every uploaded sheet ----------------------
+            // Only sheets present in result.Sheets are touched. Slots in
+            // result.MissingSlots are never visited here, so they stay
+            // completely blank in the exported DXF — no placeholder
+            // geometry is ever generated for a "not uploaded" sheet.
+            CadDocument? masterDocument = null;
+
+            var mergedCount = 0;
+
+            // Village boundary fragments collected from every sheet's
+            // Poly_Village_Bndry layer, already in final stitched
+            // (grid-transformed) coordinates.
+            var villageBoundaryRings =
+                new List<Geometry>();
+
+            foreach (var sheet in result.Sheets)
+            {
+                if (!File.Exists(sheet.FilePath))
+                {
+                    result.MergeErrors.Add(
+                        $"{sheet.FileName}: source file not found.");
+
+                    continue;
+                }
+
+                try
+                {
+                    var sourceDocument =
+                        ReadCadDocument(
+                            sheet.FilePath,
+                            result.MergeErrors);
+
+                    if (sourceDocument == null)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: CAD document could not be read.");
+
+                        continue;
+                    }
+
+                    var sourceEntities =
+                        sourceDocument.Entities
+                            .ToList();
+
+                    if (sourceEntities.Count == 0)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: no model-space entities were read.");
+
+                        continue;
+                    }
+
+                    if (masterDocument == null)
+                    {
+                        masterDocument =
+                            sourceDocument;
+
+                        foreach (var entity in sourceEntities)
+                        {
+                            masterDocument.Entities.Remove(
+                                entity);
+                        }
+                    }
+
+                    var safeColumn =
+                        Math.Max(
+                            0,
+                            Math.Min(
+                                columnCount - 1,
+                                sheet.Column));
+
+                    var safeRow =
+                        Math.Max(
+                            0,
+                            Math.Min(
+                                rowCount - 1,
+                                sheet.Row));
+
+                    var targetX =
+                        columnOffsets[safeColumn];
+
+                    var targetY =
+                        -rowOffsets[safeRow];
+
+                    var translation =
+                        Transform.CreateTranslation(
+                            new XYZ(
+                                targetX - sheet.MinX,
+                                targetY - sheet.MaxY,
+                                0));
+
+                    var flattenedEntities =
+                        new List<Entity>();
+
+                    foreach (var sourceEntity in sourceEntities)
+                    {
+                        FlattenEntity(
+                            sourceEntity,
+                            flattenedEntities,
+                            result.MergeErrors,
+                            sheet.FileName);
+                    }
+
+                    if (flattenedEntities.Count == 0)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: no drawable entities remained after flattening.");
+
+                        continue;
+                    }
+
+                    var sheetPlaced = false;
+
+                    foreach (var flattenedEntity in flattenedEntities)
+                    {
+                        try
+                        {
+                            var layerName =
+                                flattenedEntity.Layer?.Name ??
+                                string.Empty;
+
+                            // Print/plot scaffolding never belongs in the
+                            // stitched village map — drop it up front.
+                            if (IndexMapLayerConfig.NonSurveyLayers
+                                    .Contains(layerName))
+                            {
+                                continue;
+                            }
+
+                            Entity outputEntity;
+
+                            if (ReferenceEquals(
+                                    sourceDocument,
+                                    masterDocument))
+                            {
+                                outputEntity =
+                                    flattenedEntity;
+                            }
+                            else
+                            {
+                                outputEntity =
+                                    (Entity)flattenedEntity.Clone();
+                            }
+
+                            outputEntity.ApplyTransform(
+                                translation);
+
+                            masterDocument!.Entities.Add(
+                                outputEntity);
+
+                            sheetPlaced = true;
+
+                            // --- Step 3: capture village boundary --------
+                            if (string.Equals(
+                                    layerName,
+                                    IndexMapLayerConfig.VillageBoundaryLayer,
+                                    StringComparison.OrdinalIgnoreCase))
+                            {
+                                var ring =
+                                    TryExtractRing(outputEntity);
+
+                                if (ring != null)
+                                {
+                                    villageBoundaryRings.Add(
+                                        ring);
+                                }
+                            }
+                        }
+                        catch (Exception ex)
+                        {
+                            result.MergeErrors.Add(
+                                $"{sheet.FileName}: entity add failed — " +
+                                $"{ex.GetType().Name}: {ex.Message}");
+                        }
+                    }
+
+                    if (sheetPlaced)
+                        mergedCount++;
+                }
+                catch (Exception ex)
+                {
+                    result.MergeErrors.Add(
+                        $"{sheet.FileName}: merge failed — " +
+                        $"{ex.GetType().Name}: {ex.Message}");
+
+                    if (ex.InnerException != null)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: inner exception — " +
+                            $"{ex.InnerException.GetType().Name}: " +
+                            $"{ex.InnerException.Message}");
+                    }
+                }
+            }
+
+            if (masterDocument == null)
+            {
+                result.MergeErrors.Add(
+                    "No CAD document could be loaded.");
+
+                return Task.CompletedTask;
+            }
+
+            if (masterDocument.Entities.Count == 0)
+            {
+                result.MergeErrors.Add(
+                    "Merged master document contains zero model-space entities.");
+
+                return Task.CompletedTask;
+            }
+
+            if (mergedCount == 0)
+            {
+                result.MergeErrors.Add(
+                    "No sheets were successfully merged.");
+
+                return Task.CompletedTask;
+            }
+
+            // --- Step 4: village boundary as a reference guide -----------
+            // Every sheet's real geometry (parcels, lines, labels, sheet
+            // numbers) is kept exactly as placed — nothing is deleted
+            // here. The village boundary layer is already part of the
+            // merged output like any other placed layer; this step only
+            // confirms it was found, so the outline is available in the
+            // DXF as a master guide without risking real survey geometry
+            // being cut away by an approximate trim.
+            if (villageBoundaryRings.Count == 0)
+            {
+                result.MergeErrors.Add(
+                    $"No '{IndexMapLayerConfig.VillageBoundaryLayer}' " +
+                    "geometry was found on any sheet — the stitched map " +
+                    "has no master village boundary outline.");
+            }
+
+            if (masterDocument.Entities.Count == 0)
+            {
+                result.MergeErrors.Add(
+                    "Village boundary trim removed every entity — " +
+                    "export aborted.");
+
+                return Task.CompletedTask;
+            }
+
+            // --- Step 5: write the unified DXF (and DWG) -----------------
+            Directory.CreateDirectory(
+                outputDirectory);
+
+            var timestamp =
+                DateTime.UtcNow.ToString(
+                    "yyyyMMdd_HHmmssfff");
+
+            var dxfFileName =
+                $"village_stitched_{timestamp}.dxf";
+
+            var dwgFileName =
+                $"village_stitched_{timestamp}.dwg";
+
+            var dxfPath =
+                Path.Combine(
+                    outputDirectory,
+                    dxfFileName);
+
+            var dwgPath =
+                Path.Combine(
+                    outputDirectory,
+                    dwgFileName);
+
+            try
+            {
+                DxfWriter.Write(
+                    dxfPath,
+                    masterDocument);
+            }
+            catch (Exception ex)
+            {
+                result.MergeErrors.Add(
+                    $"DXF export failed — " +
+                    $"{ex.GetType().Name}: {ex.Message}");
+
+                if (ex.InnerException != null)
+                {
+                    result.MergeErrors.Add(
+                        $"DXF export inner exception — " +
+                        $"{ex.InnerException.GetType().Name}: " +
+                        $"{ex.InnerException.Message}");
+                }
+            }
+
+            try
+            {
+                DwgWriter.Write(
+                    dwgPath,
+                    masterDocument);
+            }
+            catch (Exception ex)
+            {
+                result.MergeErrors.Add(
+                    $"DWG export failed — " +
+                    $"{ex.GetType().Name}: {ex.Message}");
+
+                if (ex.InnerException != null)
+                {
+                    result.MergeErrors.Add(
+                        $"DWG export inner exception — " +
+                        $"{ex.InnerException.GetType().Name}: " +
+                        $"{ex.InnerException.Message}");
+                }
+            }
+
+            if (File.Exists(dxfPath))
+            {
+                result.MergeOutputFileName =
+                    dxfFileName;
+            }
+            else if (File.Exists(dwgPath))
+            {
+                result.MergeOutputFileName =
+                    dwgFileName;
+            }
+            else
+            {
+                result.MergeErrors.Add(
+                    "Neither DXF nor DWG output was created.");
+            }
+
+            return Task.CompletedTask;
+        }
+
+        private static bool IsFiniteBox(BoundingBox box)
+        {
+            return IsFinite(box.Min.X) &&
+                   IsFinite(box.Min.Y) &&
+                   IsFinite(box.Max.X) &&
+                   IsFinite(box.Max.Y) &&
+                   box.Min.X <= box.Max.X &&
+                   box.Min.Y <= box.Max.Y;
+        }
+
+        private static bool IsFinite(double value)
+        {
+            return !double.IsNaN(value) &&
+                   !double.IsInfinity(value);
+        }
+
+        private static Polygon? TryExtractRing(Entity entity)
+        {
+            try
+            {
+                List<Coordinate>? points = null;
+
+                if (entity is LwPolyline lw &&
+                    lw.Vertices.Count >= 3)
+                {
+                    points = lw.Vertices
+                        .Select(v => new Coordinate(
+                            v.Location.X,
+                            v.Location.Y))
+                        .ToList();
+                }
+                else if (entity is Polyline2D p2d &&
+                         p2d.Vertices.Count >= 3)
+                {
+                    points = p2d.Vertices
+                        .Select(v => new Coordinate(
+                            v.Location.X,
+                            v.Location.Y))
+                        .ToList();
+                }
+
+                if (points == null || points.Count < 3)
+                    return null;
+
+                if (points[0].X != points[^1].X ||
+                    points[0].Y != points[^1].Y)
+                {
+                    points.Add(points[0]);
+                }
+
+                var factory =
+                    GeometryFactory.Default;
+
+                var polygon =
+                    factory.CreatePolygon(
+                        points.ToArray());
+
+                if (polygon.IsValid)
+                    return polygon;
+
+                var repaired =
+                    polygon.Buffer(0);
+
+                if (repaired is Polygon repairedPolygon)
+                    return repairedPolygon;
+
+                if (repaired is MultiPolygon multiPolygon &&
+                    multiPolygon.NumGeometries > 0)
+                {
+                    // Keep the largest piece if the self-intersecting
+                    // ring split into several after repair.
+                    return (Polygon)multiPolygon.Geometries
+                        .OrderByDescending(g => g.Area)
+                        .First();
+                }
+
+                return null;
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static void FlattenEntity(
