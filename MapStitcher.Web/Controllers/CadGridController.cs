@@ -1,5 +1,7 @@
 ﻿using MapStitcher.Business.Contracts;
 using Microsoft.AspNetCore.Mvc;
+using System;
+using System.Linq;
 
 namespace MapStitcher.Web.Controllers
 {

@@ -588,9 +588,10 @@ namespace MapStitcher.Business.Services
             }
 
             // --- Step 1: grid layout ------------------------------------
-            // Same column/row sizing as the plain grid merge: every placed
-            // sheet snaps into the cell matching its arranged Row/Column so
-            // adjacent parcel lines line up across the stitched map.
+            // Baseline column/row anchors, same sizing as the plain grid
+            // merge — used only as a fallback for the first sheet in a
+            // row/column (or one following a missing slot), where there
+            // is no real neighbor edge yet to snap against.
             var columnCount =
                 result.ColumnCount > 0
                     ? result.ColumnCount
@@ -645,8 +646,7 @@ namespace MapStitcher.Business.Services
             {
                 columnOffsets[i] =
                     columnOffsets[i - 1] +
-                    columnWidths[i - 1] +
-                    CellGap;
+                    columnWidths[i - 1];
             }
 
             var rowOffsets =
@@ -656,8 +656,93 @@ namespace MapStitcher.Business.Services
             {
                 rowOffsets[i] =
                     rowOffsets[i - 1] +
-                    rowHeights[i - 1] +
-                    CellGap;
+                    rowHeights[i - 1];
+            }
+
+            // --- Step 1b: snap every sheet against its real neighbors ---
+            // Instead of dropping each sheet flush into a uniform-size
+            // grid cell (which leaves a gap whenever a sheet is smaller
+            // than the widest/tallest sheet sharing its column/row), walk
+            // sheets in row-major order and, wherever an actual left or
+            // top neighbor sheet was already placed, snap this sheet's
+            // edge directly onto that neighbor's real (actual-width)
+            // edge — zero gap, no overlap. Only sheets with no placed
+            // neighbor yet (first in a row/column, or right after a
+            // missing slot) fall back to the baseline column/row anchor.
+            var placementByCell =
+                new Dictionary<
+                    (int Row, int Column),
+                    (double X, double Y, double Width, double Height)>();
+
+            var targetPositionBySheet =
+                new Dictionary<CadSheetGridItem, (double X, double Y)>();
+
+            foreach (var sheet in
+                     result.Sheets
+                         .OrderBy(s => s.Row)
+                         .ThenBy(s => s.Column))
+            {
+                var width =
+                    sheet.MaxX > sheet.MinX
+                        ? sheet.MaxX - sheet.MinX
+                        : DefaultCellSize;
+
+                var height =
+                    sheet.MaxY > sheet.MinY
+                        ? sheet.MaxY - sheet.MinY
+                        : DefaultCellSize;
+
+                var safeColumn =
+                    Math.Max(
+                        0,
+                        Math.Min(
+                            columnCount - 1,
+                            sheet.Column));
+
+                var safeRow =
+                    Math.Max(
+                        0,
+                        Math.Min(
+                            rowCount - 1,
+                            sheet.Row));
+
+                double targetX;
+
+                if (placementByCell.TryGetValue(
+                        (safeRow, safeColumn - 1),
+                        out var leftNeighbor))
+                {
+                    targetX =
+                        leftNeighbor.X +
+                        leftNeighbor.Width;
+                }
+                else
+                {
+                    targetX =
+                        columnOffsets[safeColumn];
+                }
+
+                double targetY;
+
+                if (placementByCell.TryGetValue(
+                        (safeRow - 1, safeColumn),
+                        out var topNeighbor))
+                {
+                    targetY =
+                        topNeighbor.Y -
+                        topNeighbor.Height;
+                }
+                else
+                {
+                    targetY =
+                        -rowOffsets[safeRow];
+                }
+
+                placementByCell[(safeRow, safeColumn)] =
+                    (targetX, targetY, width, height);
+
+                targetPositionBySheet[sheet] =
+                    (targetX, targetY);
             }
 
             // --- Step 2: place every uploaded sheet ----------------------
@@ -738,11 +823,20 @@ namespace MapStitcher.Business.Services
                                 rowCount - 1,
                                 sheet.Row));
 
+                    var target =
+                        targetPositionBySheet.TryGetValue(
+                            sheet,
+                            out var snapped)
+                            ? snapped
+                            : (
+                                X: columnOffsets[safeColumn],
+                                Y: -rowOffsets[safeRow]);
+
                     var targetX =
-                        columnOffsets[safeColumn];
+                        target.X;
 
                     var targetY =
-                        -rowOffsets[safeRow];
+                        target.Y;
 
                     var translation =
                         Transform.CreateTranslation(
@@ -781,9 +875,17 @@ namespace MapStitcher.Business.Services
                                 flattenedEntity.Layer?.Name ??
                                 string.Empty;
 
-                            // Print/plot scaffolding never belongs in the
-                            // stitched village map — drop it up front.
-                            if (IndexMapLayerConfig.NonSurveyLayers
+                            // Whitelist only: keep actual cadastral
+                            // parcel geometry (Poly_Survey_Bndry) and the
+                            // master village boundary (Poly_Village_Bndry).
+                            // Everything else — titles, legends, scale/
+                            // direction symbols, coordinate/reference
+                            // text tables, grid frames, built-up/off/
+                            // cancelled polygons, point symbols — is
+                            // marginal sheet furniture and is dropped so
+                            // the stitched export has clean parcel lines
+                            // only, with no overlapping text or frames.
+                            if (!IndexMapLayerConfig.CadastralKeepLayers
                                     .Contains(layerName))
                             {
                                 continue;
@@ -885,23 +987,13 @@ namespace MapStitcher.Business.Services
             // here. The village boundary layer is already part of the
             // merged output like any other placed layer; this step only
             // confirms it was found, so the outline is available in the
-            // DXF as a master guide without risking real survey geometry
-            // being cut away by an approximate trim.
+            // DXF as a master guide.
             if (villageBoundaryRings.Count == 0)
             {
                 result.MergeErrors.Add(
                     $"No '{IndexMapLayerConfig.VillageBoundaryLayer}' " +
                     "geometry was found on any sheet — the stitched map " +
                     "has no master village boundary outline.");
-            }
-
-            if (masterDocument.Entities.Count == 0)
-            {
-                result.MergeErrors.Add(
-                    "Village boundary trim removed every entity — " +
-                    "export aborted.");
-
-                return Task.CompletedTask;
             }
 
             // --- Step 5: write the unified DXF (and DWG) -----------------
