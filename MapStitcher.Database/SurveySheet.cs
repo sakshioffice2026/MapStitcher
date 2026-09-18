@@ -54,7 +54,7 @@
         public DateTime UploadedDate { get; set; } = DateTime.UtcNow;
 
         public Project Project { get; set; } = null!;
-        public ICollection<TiePoint> TiePoints { get; set; } = new List<TiePoint>();
-        public ICollection<SheetBoundary> Boundaries { get; set; } = new List<SheetBoundary>();
+        //public ICollection<TiePoint> TiePoints { get; set; } = new List<TiePoint>();
+        //public ICollection<SheetBoundary> Boundaries { get; set; } = new List<SheetBoundary>();
     }
 }

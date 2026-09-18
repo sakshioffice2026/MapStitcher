@@ -15,8 +15,8 @@ namespace MapStitcher.Database
 
         public DbSet<Project> Projects => Set<Project>();
         public DbSet<SurveySheet> SurveySheets => Set<SurveySheet>();
-        public DbSet<TiePoint> TiePoints => Set<TiePoint>();
-        public DbSet<SheetBoundary> SheetBoundaries => Set<SheetBoundary>();
+        //public DbSet<TiePoint> TiePoints => Set<TiePoint>();
+        //public DbSet<SheetBoundary> SheetBoundaries => Set<SheetBoundary>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -46,29 +46,29 @@ namespace MapStitcher.Database
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            modelBuilder.Entity<TiePoint>(e =>
-            {
-                e.HasKey(t => t.PointID);
-                e.Property(t => t.PointLabel).HasMaxLength(20);
-                e.HasIndex(t => t.PointLabel);
+            //modelBuilder.Entity<TiePoint>(e =>
+            //{
+            //    e.HasKey(t => t.PointID);
+            //    e.Property(t => t.PointLabel).HasMaxLength(20);
+            //    e.HasIndex(t => t.PointLabel);
 
-                e.HasOne(t => t.SurveySheet)
-                 .WithMany(s => s.TiePoints)
-                 .HasForeignKey(t => t.SheetID)
-                 .OnDelete(DeleteBehavior.Cascade);
-            });
+            //    e.HasOne(t => t.SurveySheet)
+            //     .WithMany(s => s.TiePoints)
+            //     .HasForeignKey(t => t.SheetID)
+            //     .OnDelete(DeleteBehavior.Cascade);
+            //});
 
-            modelBuilder.Entity<SheetBoundary>(e =>
-            {
-                e.HasKey(b => b.BoundaryID);
-                e.Property(b => b.PlotLabel).HasMaxLength(50);
-                e.Property(b => b.Geometry).HasColumnType("geometry");
+            //modelBuilder.Entity<SheetBoundary>(e =>
+            //{
+            //    e.HasKey(b => b.BoundaryID);
+            //    e.Property(b => b.PlotLabel).HasMaxLength(50);
+            //    e.Property(b => b.Geometry).HasColumnType("geometry");
 
-                e.HasOne(b => b.SurveySheet)
-                 .WithMany(s => s.Boundaries)
-                 .HasForeignKey(b => b.SheetID)
-                 .OnDelete(DeleteBehavior.Cascade);
-            });
+            //    e.HasOne(b => b.SurveySheet)
+            //     .WithMany(s => s.Boundaries)
+            //     .HasForeignKey(b => b.SheetID)
+            //     .OnDelete(DeleteBehavior.Cascade);
+            //});
         }
     }
 }

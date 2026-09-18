@@ -20,11 +20,7 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
 
 builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
 builder.Services.AddScoped<ISurveySheetRepository, SurveySheetRepository>();
-builder.Services.AddScoped<ITiePointRepository, TiePointRepository>();
-builder.Services.AddScoped<ISheetBoundaryRepository, SheetBoundaryRepository>();
-builder.Services.AddScoped<ICadastralMergeService, CadastralMergeService>();
-builder.Services.AddScoped<ISheetPlacementService, SheetPlacementService>();
-builder.Services.AddScoped<IStitchOrchestrationService, StitchOrchestrationService>();
+
 
 // 
 builder.Services.AddScoped<ISheetArrangementOrchestrator, SheetArrangementOrchestrator>();
@@ -32,23 +28,6 @@ builder.Services.AddScoped<IIndexMapExtractionService, IndexMapExtractionService
 builder.Services.AddScoped<ITopologyGridService, TopologyGridService>();
 builder.Services.AddScoped<INeatlineExtractionService, NeatlineExtractionService>();
 builder.Services.AddScoped<ISheetArrangementOrchestrator, SheetArrangementOrchestrator>();
-builder.Services.AddScoped<ICadastralExportService>(sp =>
-{
-    var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();
-    var boundaryRepo = sp.GetRequiredService<ISheetBoundaryRepository>();
-    var env = sp.GetRequiredService<IWebHostEnvironment>();
-    return new CadastralExportService(sheetRepo, boundaryRepo, env.WebRootPath);
-});
-builder.Services.AddScoped<ISvgMosaicExportService, SvgMosaicExportService>();
-builder.Services.AddScoped<ISheetGridArrangementService, SheetGridArrangementService>();
-builder.Services.AddScoped<ICadastralParsingService>(sp =>
-{
-    var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();
-    var tiePointRepo = sp.GetRequiredService<ITiePointRepository>();
-    var boundaryRepo = sp.GetRequiredService<ISheetBoundaryRepository>();
-    var env = sp.GetRequiredService<IWebHostEnvironment>();
-    return new CadastralParsingService(sheetRepo, tiePointRepo, boundaryRepo, env.WebRootPath);
-});
 
 builder.Services.AddScoped<
     ICadCoordinateInspectionService,
@@ -56,20 +35,7 @@ builder.Services.AddScoped<
 
 
 builder.Services.AddScoped<ICadSheetGridService,CadSheetGridService>();
-builder.Services.AddScoped<IJigsawIndexExtractionService>(sp =>
-{
-    var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();
-    var env = sp.GetRequiredService<IWebHostEnvironment>();
-    return new JigsawIndexExtractionService(sheetRepo, env.WebRootPath);
-});
 
-builder.Services.AddScoped<IJigsawStitchService>(sp =>
-{
-    var sheetRepo = sp.GetRequiredService<ISurveySheetRepository>();
-    var indexService = sp.GetRequiredService<IJigsawIndexExtractionService>();
-    var env = sp.GetRequiredService<IWebHostEnvironment>();
-    return new JigsawStitchService(sheetRepo, indexService, env.WebRootPath);
-});
 
 var app = builder.Build();
 
