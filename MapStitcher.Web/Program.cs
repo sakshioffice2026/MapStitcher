@@ -1,8 +1,7 @@
 using MapStitcher.Business.Contracts;
 using MapStitcher.Business.Services;
 using MapStitcher.Database;
-using MapStitcher.Repositories.Contracts;
-using MapStitcher.Repositories.Repositories;
+
 using Microsoft.EntityFrameworkCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -17,9 +16,6 @@ builder.Services.AddDbContext<ApplicationDbContext>(options =>
         new MySqlServerVersion(new Version(8, 0, 21)),
         x => x.UseNetTopologySuite()
     ));
-
-builder.Services.AddScoped<IProjectRepository, ProjectRepository>();
-builder.Services.AddScoped<ISurveySheetRepository, SurveySheetRepository>();
 
 
 // 

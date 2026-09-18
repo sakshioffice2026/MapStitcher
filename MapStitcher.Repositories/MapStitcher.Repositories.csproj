@@ -15,4 +15,9 @@
     <ProjectReference Include="..\MapStitcher.Database\MapStitcher.Database.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Contracts\" />
+    <Folder Include="Repositories\" />
+  </ItemGroup>
+
 </Project>

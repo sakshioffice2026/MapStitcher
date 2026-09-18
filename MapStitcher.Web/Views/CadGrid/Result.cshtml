@@ -1,10 +1,9 @@
-
 @model MapStitcher.Model.CadSheetGridResult
 @using System.Globalization
 @using System.Net
-
 @{
-    ViewData["Title"] = "CAD Sheet Grid";
+    ViewData["Title"] = "CAD Sheet Grid — Result";
+    Layout = null;
 
     var sheetsByPosition = Model.Sheets
         .GroupBy(x => (x.Row, x.Column))
@@ -19,8 +18,17 @@
         .Where(g => g.Count() > 1)
         .ToList();
 
-    // --- Geometry Grid: sheets laid out at their real relative size/shape
-    // instead of uniform boxes, using each sheet's actual CAD Width/Height. ---
+    int gridRows = Math.Max(Model.RowCount, 1);
+    int gridCols = Math.Max(Model.ColumnCount, 1);
+
+    var statusColor = new Dictionary<string, string>
+    {
+        ["Filled"] = "#22c55e",
+        ["Missing"] = "#f59e0b",
+        ["Empty"] = "#334155"
+    };
+
+    // --- Geometry Grid: sheets laid out at real relative size/shape ---
     var geoRowCount = Model.RowCount;
     var geoColCount = Model.ColumnCount;
 
@@ -68,551 +76,258 @@
     string GeoNum(double v) => v.ToString("F2", CultureInfo.InvariantCulture);
 }
 
-<style>
-    .cad-grid-page {
-        padding: 24px;
-    }
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>CAD Sheet Grid — Result</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet" />
+    <link href="~/css/workspace.css" rel="stylesheet" />
+    <style>
+        :root { --grid-cols: @gridCols; --grid-rows: @gridRows; }
+        .grid-cell.missing { background:#241a08; border:2px dashed #b45309; color:#f59e0b; }
+        .grid-cell .sheet-file { font-size:9px; color:#94a3b8; margin-top:2px; max-width:140px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 
-    .cad-grid-header {
-        margin-bottom: 24px;
-    }
+        .geometry-grid-wrapper { padding:20px; background:#0b1220; }
+        .geometry-grid-wrapper svg { background:#0f172a; border:1px solid #334155; border-radius:6px; }
+        .geometry-svg-sheet-rect { fill:#1e293b; stroke:#475569; stroke-width:1; }
+        .geometry-svg-missing-rect { fill:#241a08; stroke:#b45309; stroke-width:1.5; stroke-dasharray:6,4; }
+        .geometry-svg-empty-rect { fill:#0b1220; stroke:#1e293b; stroke-width:1; stroke-dasharray:3,3; }
+        .geometry-svg-label { fill:#e2e8f0; font-size:12px; font-family:inherit; font-weight:600; }
+        .geometry-svg-sublabel { fill:#94a3b8; font-size:10px; font-family:inherit; }
+        .geometry-svg-missing-label { fill:#f59e0b; font-size:11px; font-family:inherit; }
 
-        .cad-grid-header h1 {
-            margin: 0 0 6px 0;
-            font-size: 28px;
-        }
+        #geometry-view { display:none; }
+    </style>
+</head>
+<body>
 
-        .cad-grid-header p {
-            margin: 0;
-            color: #666;
-        }
+    <div class="top-bar">
+        <div class="project-heading">
+            <div class="project-name">CAD Sheet Grid</div>
+            <div class="jurisdiction">
+                <span>@Model.SheetCount sheets</span>
+                <span class="separator">›</span>
+                <span>@gridRows × @gridCols grid</span>
+            </div>
+        </div>
 
-    .summary {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(150px, 1fr));
-        gap: 12px;
-        margin-bottom: 30px;
-    }
+        <div class="top-actions">
+            @if (!string.IsNullOrWhiteSpace(Model.SessionId))
+            {
+                <a asp-controller="CadGrid" asp-action="ExportGeometryGrid" asp-route-sessionId="@Model.SessionId"
+                   class="btn btn-sm btn-outline-success">↓ Export DXF</a>
+                <a asp-controller="CadGrid" asp-action="ExportGeometryGridDwg" asp-route-sessionId="@Model.SessionId"
+                   class="btn btn-sm btn-outline-success">↓ Export DWG</a>
+                <a asp-controller="CadGrid" asp-action="ExportVillageStitchedMap" asp-route-sessionId="@Model.SessionId"
+                   class="btn btn-sm btn-primary">⚡ Stitch Village Map</a>
+            }
+            <a asp-controller="CadGrid" asp-action="Index" class="btn btn-sm btn-outline-secondary">← Back to Upload</a>
+        </div>
+    </div>
 
-    .summary-card {
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        padding: 16px;
-        background: #fff;
-    }
-
-        .summary-card .label {
-            display: block;
-            font-size: 13px;
-            color: #777;
-            margin-bottom: 6px;
-        }
-
-        .summary-card .value {
-            font-size: 24px;
-            font-weight: 600;
-        }
-
-    .grid-section {
-        margin-top: 20px;
-    }
-
-        .grid-section h2 {
-            margin-bottom: 6px;
-        }
-
-    .grid-section-description {
-        color: #666;
-        margin-bottom: 16px;
-    }
-
-    .spatial-grid-wrapper {
-        width: 100%;
-        overflow-x: auto;
-        padding-bottom: 10px;
-    }
-
-    .spatial-grid {
-        display: grid;
-        grid-template-columns: repeat( @Model.ColumnCount, minmax(250px, 1fr));
-        gap: 12px;
-        min-width: max-content;
-    }
-
-    .sheet {
-        min-height: 180px;
-        border: 1px solid #ccc;
-        border-radius: 8px;
-        background: #fff;
-        padding: 16px;
-        box-sizing: border-box;
-    }
-
-    .sheet-index {
-        font-size: 18px;
-        font-weight: 700;
-        margin-bottom: 8px;
-    }
-
-    .sheet-name {
-        font-weight: 600;
-        margin-bottom: 10px;
-        word-break: break-word;
-    }
-
-    .sheet-number {
-        font-size: 14px;
-        margin-bottom: 8px;
-    }
-
-    .sheet-position {
-        font-size: 13px;
-        color: #555;
-        margin-bottom: 8px;
-    }
-
-    .sheet-cad {
-        font-size: 12px;
-        color: #666;
-        line-height: 1.5;
-        margin-top: 10px;
-    }
-
-    .grid-empty {
-        min-height: 180px;
-        border: 2px dashed #bbb;
-        border-radius: 8px;
-        background: #fafafa;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-direction: column;
-        color: #999;
-        box-sizing: border-box;
-    }
-
-    .grid-empty-title {
-        font-size: 15px;
-        font-weight: 600;
-    }
-
-    .grid-empty-position {
-        margin-top: 5px;
-        font-size: 11px;
-        color: #aaa;
-    }
-
-    .grid-missing {
-        border-color: #e0a800;
-        background: #fff8e6;
-        color: #8a6500;
-    }
-
-    .geometry-grid-wrapper {
-        width: 100%;
-        overflow: auto;
-        padding: 10px;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        background: #f5f6f8;
-    }
-
-    .geometry-svg-sheet-rect {
-        fill: #ffffff;
-        stroke: #3b6fce;
-        stroke-width: 1.5;
-    }
-
-    .geometry-svg-missing-rect {
-        fill: #fff8e6;
-        stroke: #e0a800;
-        stroke-width: 1.5;
-        stroke-dasharray: 6 4;
-    }
-
-    .geometry-svg-empty-rect {
-        fill: #fafafa;
-        stroke: #cccccc;
-        stroke-width: 1;
-        stroke-dasharray: 4 4;
-    }
-
-    .geometry-svg-label {
-        font-size: 12px;
-        font-family: sans-serif;
-        fill: #222222;
-    }
-
-    .geometry-svg-sublabel {
-        font-size: 10px;
-        font-family: sans-serif;
-        fill: #666666;
-    }
-
-    .geometry-svg-missing-label {
-        font-size: 12px;
-        font-family: sans-serif;
-        fill: #8a6500;
-    }
-
-    .errors-section,
-    .skipped-section {
-        margin-top: 30px;
-        padding: 16px;
-        border: 1px solid #ddd;
-        border-radius: 8px;
-        background: #fff;
-    }
-
-        .errors-section h2,
-        .skipped-section h2 {
-            margin-top: 0;
-            font-size: 18px;
-        }
-
-        .errors-section ul,
-        .skipped-section ul {
-            margin-bottom: 0;
-            padding-left: 20px;
-        }
-
-    .error-item {
-        margin-bottom: 6px;
-    }
-
-    .skipped-item {
-        margin-bottom: 6px;
-    }
-
-    .back-link {
-        display: inline-block;
-        margin-top: 24px;
-        text-decoration: none;
-    }
-
-    @@media (max-width: 700px) {
-        .cad-grid-page
-
+    @if (Model.MergeErrors != null && Model.MergeErrors.Count > 0)
     {
-        padding: 16px;
+        <div class="alert-bar">
+            <div class="alert alert-warning alert-dismissible mb-0 py-2" role="alert">
+                @string.Join("; ", Model.MergeErrors.TakeLast(5))
+                <button type="button" class="btn-close btn-sm" data-bs-dismiss="alert"></button>
+            </div>
+        </div>
     }
 
-    .summary {
-        grid-template-columns: 1fr;
-    }
+    <div class="workspace-layout">
 
-    .spatial-grid {
-        grid-template-columns: repeat( @Model.ColumnCount, minmax(220px, 220px));
-    }
-
-    }</style>
-
-<div class="cad-grid-page">
-
-    <div class="cad-grid-header">
-        <h1>CAD Sheet Grid</h1>
-        <p>Spatial arrangement of uploaded CAD sheets.</p>
-    </div>
-
-    <div class="summary">
-
-        <div class="summary-card">
-            <span class="label">Sheets</span>
-            <span class="value">@Model.SheetCount</span>
-        </div>
-
-        <div class="summary-card">
-            <span class="label">Rows</span>
-            <span class="value">@Model.RowCount</span>
-        </div>
-
-        <div class="summary-card">
-            <span class="label">Columns</span>
-            <span class="value">@Model.ColumnCount</span>
-        </div>
-
-    </div>
-
-    <section class="grid-section">
-
-        <h2>Index Grid</h2>
-
-        <div class="grid-section-description">
-            Each sheet is positioned according to its validated
-            North, South, East and West relationships.
-        </div>
-
-        <div class="spatial-grid-wrapper">
-
-            <div class="spatial-grid">
-
-                @for (var row = 0; row < Model.RowCount; row++)
+        <aside class="sidebar">
+            <div class="sidebar-header">Sheets (@Model.Sheets.Count)</div>
+            <div class="sidebar-sheet-list">
+                @foreach (var sheet in Model.Sheets.OrderBy(s => s.Row).ThenBy(s => s.Column))
                 {
-                    @for (var column = 0; column < Model.ColumnCount; column++)
-                    {
-                        if (sheetsByPosition.TryGetValue(
-                        (row, column),
-                        out var sheet))
-                        {
-                            <div class="sheet">
-
-                                <div class="sheet-index">
-                                    Sheet #@sheet.IndexNumber
-                                </div>
-
-                                <div class="sheet-name">
-                                    @sheet.FileName
-                                </div>
-
-                                <div class="sheet-number">
-                                    Sheet Number:
-                                    <strong>@sheet.SheetNumber</strong>
-                                </div>
-
-                                <div class="sheet-position">
-                                    Row: @sheet.Row
-                                    <br />
-                                    Column: @sheet.Column
-                                </div>
-
-                                <div class="sheet-cad">
-                                    <strong>CAD Bounds</strong>
-                                    <br />
-                                    X:
-                                    @sheet.MinX.ToString("F2")
-                                    –
-                                    @sheet.MaxX.ToString("F2")
-                                    <br />
-                                    Y:
-                                    @sheet.MinY.ToString("F2")
-                                    –
-                                    @sheet.MaxY.ToString("F2")
-                                    <br />
-                                    Width:
-                                    @sheet.Width.ToString("F2")
-                                    <br />
-                                    Height:
-                                    @sheet.Height.ToString("F2")
-                                    <br />
-                                    Entities:
-                                    @sheet.EntityCount
-                                    <br />
-                                    Laghu References:
-                                    @sheet.LaghuReferenceCount
-                                </div>
-
-                            </div>
-                        }
-                        else if (missingByPosition.TryGetValue(
-                        (row, column),
-                        out var missing))
-                        {
-                            <div class="grid-empty grid-missing">
-
-                                <div class="grid-empty-title">
-                                    Missing
-                                </div>
-
-                                <div class="grid-empty-position">
-                                    Sheet @missing.SheetNumber not uploaded
-                                    <br />
-                                    Row @row · Column @column
-                                </div>
-
-                            </div>
-                        }
-                        else
-                        {
-                            <div class="grid-empty">
-
-                                <div class="grid-empty-title">
-                                    Empty
-                                </div>
-
-                                <div class="grid-empty-position">
-                                    Row @row · Column @column
-                                </div>
-
-                            </div>
-                        }
-                    }
+                    <div class="sidebar-sheet placed">
+                        <div class="sheet-num">Sheet @sheet.SheetNumber</div>
+                        <div class="sheet-status" style="color:#22c55e;">
+                            ● Row @sheet.Row, Col @sheet.Column
+                        </div>
+                    </div>
                 }
 
+                @foreach (var missing in Model.MissingSlots)
+                {
+                    <div class="sidebar-sheet unplaced">
+                        <div class="sheet-num">Sheet @missing.SheetNumber</div>
+                        <div class="sheet-status" style="color:#f59e0b;">
+                            ● Missing (Row @missing.Row, Col @missing.Column)
+                        </div>
+                    </div>
+                }
+
+                @if (Model.SkippedFileNames != null && Model.SkippedFileNames.Count > 0)
+                {
+                    <div class="sidebar-header" style="margin-top:8px;">Skipped Files</div>
+                    @foreach (var fileName in Model.SkippedFileNames)
+                    {
+                        <div class="sidebar-sheet unplaced">
+                            <div class="sheet-num" style="font-size:11px;">@fileName</div>
+                        </div>
+                    }
+                }
+            </div>
+
+            <div class="legend">
+                <div class="legend-title">Legend</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#22c55e"></div>Filled</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#f59e0b"></div>Missing</div>
+                <div class="legend-item"><div class="legend-dot" style="background:#334155"></div>Empty</div>
+            </div>
+        </aside>
+
+        <div class="canvas-area">
+
+            <div class="canvas-toolbar">
+                <div class="view-toggle">
+                    <button type="button" id="btn-placement" class="active" onclick="showView('placement')">Placement Grid</button>
+                    <button type="button" id="btn-geometry" onclick="showView('geometry')">Geometry Grid</button>
+                </div>
+                <div class="toolbar-info">@Model.RowCount rows × @Model.ColumnCount cols</div>
+            </div>
+
+            <div class="canvas-scroll" style="overflow:auto;">
+                <div id="grid-view">
+                    @for (var row = 0; row < gridRows; row++)
+                    {
+                        for (var column = 0; column < gridCols; column++)
+                        {
+                            if (sheetsByPosition.TryGetValue((row, column), out var sheet))
+                            {
+                                <div class="grid-cell filled" title="Sheet @sheet.SheetNumber">
+                                    <div class="cell-coord">@row,@column</div>
+                                    <div class="cell-label">@sheet.SheetNumber</div>
+                                    <div class="cell-status-dot" style="background:#22c55e"></div>
+                                    <div class="sheet-file">@sheet.FileName</div>
+                                </div>
+                            }
+                            else if (missingByPosition.TryGetValue((row, column), out var missing))
+                            {
+                                <div class="grid-cell missing" title="Sheet @missing.SheetNumber not uploaded">
+                                    <div class="cell-coord">@row,@column</div>
+                                    <div class="empty-label">Missing</div>
+                                    <div class="sheet-file">Sheet @missing.SheetNumber</div>
+                                </div>
+                            }
+                            else
+                            {
+                                <div class="grid-cell empty">
+                                    <div class="cell-coord">@row,@column</div>
+                                    <div class="empty-plus">+</div>
+                                    <div class="empty-label">Empty</div>
+                                </div>
+                            }
+                        }
+                    }
+                </div>
+
+                @if (duplicatePositions.Count > 0)
+                {
+                    <div style="padding:0 20px 20px; color:#f59e0b; font-size:12px;">
+                        @foreach (var group in duplicatePositions)
+                        {
+                            var shown = group.First();
+                            var hidden = group.Skip(1);
+                            <div>
+                                Row @group.Key.Row, Column @group.Key.Column: showing "@shown.FileName",
+                                hiding @string.Join(", ", hidden.Select(s => $"\"{s.FileName}\""))
+                            </div>
+                        }
+                    </div>
+                }
+
+                <div id="geometry-view" class="geometry-grid-wrapper">
+                    <svg width="@GeoNum(geoSvgWidth)"
+                         height="@GeoNum(geoSvgHeight)"
+                         viewBox="0 0 @GeoNum(geoSvgWidth) @GeoNum(geoSvgHeight)"
+                         xmlns="http://www.w3.org/2000/svg">
+
+                        @for (var row = 0; row < geoRowCount; row++)
+                        {
+                            @for (var column = 0; column < geoColCount; column++)
+                            {
+                                var cellX = geoColOffsets[column] * geoScale;
+                                var cellY = geoRowOffsets[row] * geoScale;
+                                var cellW = geoColumnWidths[column] * geoScale;
+                                var cellH = geoRowHeights[row] * geoScale;
+
+                                if (sheetsByPosition.TryGetValue((row, column), out var geoSheet))
+                                {
+                                    var originX = cellX + (cellW - geoSheet.Width * geoScale) / 2;
+                                    var originY = cellY + (cellH - geoSheet.Height * geoScale) / 2;
+                                    var sheetMinX = geoSheet.MinX;
+                                    var sheetMaxY = geoSheet.MaxY;
+
+                                    var hasPolygons = geoSheet.BoundaryPolygons != null && geoSheet.BoundaryPolygons.Count > 0;
+
+                                    if (hasPolygons)
+                                    {
+                                        @Html.Raw($"<rect class=\"geometry-svg-sheet-rect\" x=\"{GeoNum(originX)}\" y=\"{GeoNum(originY)}\" width=\"{GeoNum(geoSheet.Width * geoScale)}\" height=\"{GeoNum(geoSheet.Height * geoScale)}\" />")
+
+                                        foreach (var ring in geoSheet.BoundaryPolygons)
+                                        {
+                                            if (ring.Count < 3) continue;
+
+                                            var pointsStr = string.Join(" ", ring.Select(p =>
+                                            {
+                                                var px = originX + (p.X - sheetMinX) * geoScale;
+                                                var py = originY + (sheetMaxY - p.Y) * geoScale;
+                                                return $"{GeoNum(px)},{GeoNum(py)}";
+                                            }));
+
+                                            @Html.Raw($"<polygon points=\"{pointsStr}\" fill=\"#3b6fce\" fill-opacity=\"0.25\" stroke=\"#60a5fa\" stroke-width=\"1.5\" stroke-linejoin=\"round\" />")
+                                        }
+                                    }
+                                    else
+                                    {
+                                        <rect class="geometry-svg-sheet-rect"
+                                              x="@GeoNum(originX)" y="@GeoNum(originY)"
+                                              width="@GeoNum(geoSheet.Width * geoScale)" height="@GeoNum(geoSheet.Height * geoScale)" />
+                                    }
+
+                                    @Html.Raw($"<text class=\"geometry-svg-label\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoSheet.SheetNumber)}</text>")
+                                    @Html.Raw($"<text class=\"geometry-svg-sublabel\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 30)}\">{WebUtility.HtmlEncode(geoSheet.Width.ToString("F0") + " x " + geoSheet.Height.ToString("F0"))}</text>")
+                                }
+                                else if (missingByPosition.TryGetValue((row, column), out var geoMissing))
+                                {
+                                    <rect class="geometry-svg-missing-rect"
+                                          x="@GeoNum(cellX)" y="@GeoNum(cellY)"
+                                          width="@GeoNum(cellW)" height="@GeoNum(cellH)" />
+
+                                    @Html.Raw($"<text class=\"geometry-svg-missing-label\" x=\"{GeoNum(cellX + 6)}\" y=\"{GeoNum(cellY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoMissing.SheetNumber + " not uploaded")}</text>")
+                                }
+                                else
+                                {
+                                    <rect class="geometry-svg-empty-rect"
+                                          x="@GeoNum(cellX)" y="@GeoNum(cellY)"
+                                          width="@GeoNum(cellW)" height="@GeoNum(cellH)" />
+                                }
+                            }
+                        }
+
+                    </svg>
+                </div>
             </div>
 
         </div>
 
-    </section>
+    </div>
 
-    <section class="grid-section">
-
-        <h2>Geometry Grid</h2>
-
-        <div class="grid-section-description">
-            Same row/column arrangement as above, but each sheet is drawn at
-            its real relative width and height instead of a uniform box.
-        </div>
-
-        <div class="geometry-grid-wrapper">
-            <svg width="@GeoNum(geoSvgWidth)"
-                 height="@GeoNum(geoSvgHeight)"
-                 viewBox="0 0 @GeoNum(geoSvgWidth) @GeoNum(geoSvgHeight)"
-                 xmlns="http://www.w3.org/2000/svg">
-
-                @for (var row = 0; row < geoRowCount; row++)
-                {
-                    @for (var column = 0; column < geoColCount; column++)
-                    {
-                        var cellX = geoColOffsets[column] * geoScale;
-                        var cellY = geoRowOffsets[row] * geoScale;
-                        var cellW = geoColumnWidths[column] * geoScale;
-                        var cellH = geoRowHeights[row] * geoScale;
-
-                        if (sheetsByPosition.TryGetValue((row, column), out var geoSheet))
-                        {
-                            // CAD Y-axis is up; SVG Y-axis is down. Flip Y relative to sheet's MinY.
-                            // All polygon points are translated so MinX/MinY maps to cell top-left.
-                            var originX = cellX + (cellW - geoSheet.Width * geoScale) / 2;
-                            var originY = cellY + (cellH - geoSheet.Height * geoScale) / 2;
-                            var sheetMinX = geoSheet.MinX;
-                            var sheetMaxY = geoSheet.MaxY;
-
-                            var hasPolygons = geoSheet.BoundaryPolygons != null && geoSheet.BoundaryPolygons.Count > 0;
-
-                            if (hasPolygons)
-                            {
-                                // Cell background
-                                @Html.Raw($"<rect class=\"geometry-svg-sheet-rect\" x=\"{GeoNum(originX)}\" y=\"{GeoNum(originY)}\" width=\"{GeoNum(geoSheet.Width * geoScale)}\" height=\"{GeoNum(geoSheet.Height * geoScale)}\" fill=\"#f8f9ff\" stroke=\"#ccc\" stroke-width=\"0.5\" />")
-
-                                foreach (var ring in geoSheet.BoundaryPolygons)
-                                {
-                                    if (ring.Count < 3) continue;
-
-                                    var pointsStr = string.Join(" ", ring.Select(p =>
-                                    {
-                                        var px = originX + (p.X - sheetMinX) * geoScale;
-                                        var py = originY + (sheetMaxY - p.Y) * geoScale;
-                                        return $"{GeoNum(px)},{GeoNum(py)}";
-                                    }));
-
-                                    @Html.Raw($"<polygon points=\"{pointsStr}\" fill=\"#ddeeff\" fill-opacity=\"0.5\" stroke=\"#3b6fce\" stroke-width=\"1.5\" stroke-linejoin=\"round\" />")
-                                }
-                            }
-                            else
-                            {
-                                // No polygon data — fall back to bounding box rectangle
-                                <rect class="geometry-svg-sheet-rect"
-                                      x="@GeoNum(originX)" y="@GeoNum(originY)"
-                                      width="@GeoNum(geoSheet.Width * geoScale)" height="@GeoNum(geoSheet.Height * geoScale)" />
-                            }
-
-                            @Html.Raw($"<text class=\"geometry-svg-label\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoSheet.SheetNumber)}</text>")
-                            @Html.Raw($"<text class=\"geometry-svg-sublabel\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 30)}\">{WebUtility.HtmlEncode(geoSheet.Width.ToString("F0") + " x " + geoSheet.Height.ToString("F0"))}</text>")
-                        }
-                        else if (missingByPosition.TryGetValue((row, column), out var geoMissing))
-                        {
-                            <rect class="geometry-svg-missing-rect"
-                                  x="@GeoNum(cellX)" y="@GeoNum(cellY)"
-                                  width="@GeoNum(cellW)" height="@GeoNum(cellH)" />
-
-                            @Html.Raw($"<text class=\"geometry-svg-missing-label\" x=\"{GeoNum(cellX + 6)}\" y=\"{GeoNum(cellY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoMissing.SheetNumber + " not uploaded")}</text>")
-                        }
-                        else
-                        {
-                            <rect class="geometry-svg-empty-rect"
-                                  x="@GeoNum(cellX)" y="@GeoNum(cellY)"
-                                  width="@GeoNum(cellW)" height="@GeoNum(cellH)" />
-                        }
-                    }
-                }
-
-            </svg>
-        </div>
-
-    </section>
-
-    <section class="errors-section" style="border-color:#3b6fce; background:#f0f4ff;">
-        <h2 style="color:#3b6fce;">⬇ Export Stitched Village Map</h2>
-        <p style="margin:0 0 12px 0; color:#555;">
-            Places every uploaded sheet into its grid slot, leaves any
-            "not uploaded" slot blank, trims the outer edge to the master
-            village boundary, and writes one unified DXF.
-        </p>
-        @if (!string.IsNullOrWhiteSpace(Model.SessionId))
-        {
-            <a asp-controller="CadGrid"
-               asp-action="ExportVillageStitchedMap"
-               asp-route-sessionId="@Model.SessionId"
-               style="display:inline-block;padding:10px 22px;background:#1a7a4a;color:#fff;border-radius:6px;text-decoration:none;font-weight:600;"
-               title="Generate and download the village-aligned stitched DXF">
-                ⬇ Export Stitched Village Map
-            </a>
+    <script>
+        function showView(mode) {
+            document.getElementById('grid-view').style.display = mode === 'placement' ? 'grid' : 'none';
+            document.getElementById('geometry-view').style.display = mode === 'geometry' ? 'block' : 'none';
+            document.getElementById('btn-placement').classList.toggle('active', mode === 'placement');
+            document.getElementById('btn-geometry').classList.toggle('active', mode === 'geometry');
         }
-        else
-        {
-            <p style="margin:0; color:#aaa; font-size:13px;">Session expired — please re-upload your files to generate the export.</p>
-        }
-    </section>
+    </script>
 
-    @if ((Model.MergeErrors != null && Model.MergeErrors.Count > 0) ||
-        duplicatePositions.Count > 0)
-    {
-        <section class="errors-section">
-
-            <h2>Topology / Processing Messages</h2>
-
-            <ul>
-                @if (Model.MergeErrors != null)
-                {
-                    @foreach (var error in Model.MergeErrors)
-                    {
-                        <li class="error-item">
-                            @error
-                        </li>
-                    }
-                }
-
-                @foreach (var group in duplicatePositions)
-                {
-                    var shown = group.First();
-                    var hidden = group.Skip(1);
-
-                    <li class="error-item">
-                        Row @group.Key.Row, Column @group.Key.Column: showing
-                        "@shown.FileName", hiding
-                        @string.Join(", ", hidden.Select(s => $"\"{s.FileName}\""))
-                        (same grid position resolved for multiple sheets).
-                    </li>
-                }
-            </ul>
-
-        </section>
-    }
-
-    @if (Model.SkippedFileNames != null &&
-        Model.SkippedFileNames.Count > 0)
-    {
-        <section class="skipped-section">
-
-            <h2>Skipped Files</h2>
-
-            <ul>
-                @foreach (var fileName in Model.SkippedFileNames)
-                {
-                    <li class="skipped-item">
-                        @fileName
-                    </li>
-                }
-            </ul>
-
-        </section>
-    }
-
-    <a asp-controller="CadGrid"
-       asp-action="Index"
-       class="back-link">
-        ← Back to Upload
-    </a>
-
-</div>
-
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>

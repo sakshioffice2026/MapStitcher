@@ -1,74 +1,86 @@
-﻿using Microsoft.EntityFrameworkCore;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Text;
-using System.Threading.Tasks;
+using Microsoft.EntityFrameworkCore;
 
 namespace MapStitcher.Database
 {
-    // ApplicationDbContext
-
     public class ApplicationDbContext : DbContext
     {
-        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options) : base(options) { }
+        public ApplicationDbContext(DbContextOptions<ApplicationDbContext> options)
+            : base(options) { }
 
-        public DbSet<Project> Projects => Set<Project>();
-        public DbSet<SurveySheet> SurveySheets => Set<SurveySheet>();
-        //public DbSet<TiePoint> TiePoints => Set<TiePoint>();
-        //public DbSet<SheetBoundary> SheetBoundaries => Set<SheetBoundary>();
+        public DbSet<CadGridSession> CadGridSessions => Set<CadGridSession>();
+        public DbSet<CadGridSheet> CadGridSheets => Set<CadGridSheet>();
+        public DbSet<CadGridMissingSlot> CadGridMissingSlots => Set<CadGridMissingSlot>();
+        public DbSet<CadGridMergeError> CadGridMergeErrors => Set<CadGridMergeError>();
+        public DbSet<CadGridSkippedFile> CadGridSkippedFiles => Set<CadGridSkippedFile>();
 
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
-            modelBuilder.Entity<Project>(e =>
+            modelBuilder.Entity<CadGridSession>(e =>
             {
-                e.HasKey(p => p.ProjectID);
-                e.Property(p => p.Name).IsRequired().HasMaxLength(200);
-                e.Property(p => p.District).IsRequired().HasMaxLength(100);
-                e.Property(p => p.Taluka).IsRequired().HasMaxLength(100);
-                e.Property(p => p.Village).IsRequired().HasMaxLength(100);
+                e.ToTable("CadGridSessions");
+                e.HasKey(s => s.SessionId);
+                e.Property(s => s.SessionId).HasMaxLength(32).IsFixedLength();
+                e.Property(s => s.MergeOutputFileName).HasMaxLength(260);
             });
 
-            modelBuilder.Entity<SurveySheet>(e =>
+            modelBuilder.Entity<CadGridSheet>(e =>
             {
+                e.ToTable("CadGridSheets");
                 e.HasKey(s => s.SheetID);
-                e.Property(s => s.SheetNumber).IsRequired().HasMaxLength(50);
-                e.Property(s => s.LaghuReferenceNumber).HasMaxLength(20);
+                e.Property(s => s.SessionId).HasMaxLength(32).IsFixedLength().IsRequired();
+                e.Property(s => s.FileName).IsRequired().HasMaxLength(260);
                 e.Property(s => s.FilePath).IsRequired().HasMaxLength(500);
-                e.Property(s => s.DwgVersion).HasMaxLength(10);
-                e.Property(s => s.Status).HasConversion<string>().HasMaxLength(20);
-                e.Property(s => s.FailureReason).HasMaxLength(200);
-                e.HasIndex(s => s.LaghuReferenceNumber);
-                e.Property(s => s.FileHash).HasMaxLength(64);
-                e.HasOne(s => s.Project)
-                 .WithMany(p => p.SurveySheets)
-                 .HasForeignKey(s => s.ProjectID)
+                e.Property(s => s.SheetNumber).IsRequired().HasMaxLength(50);
+                e.HasIndex(s => s.SessionId);
+                e.HasIndex(s => new { s.SessionId, s.Row, s.Column });
+
+                e.HasOne(s => s.Session)
+                 .WithMany(ss => ss.Sheets)
+                 .HasForeignKey(s => s.SessionId)
                  .OnDelete(DeleteBehavior.Cascade);
             });
 
-            //modelBuilder.Entity<TiePoint>(e =>
-            //{
-            //    e.HasKey(t => t.PointID);
-            //    e.Property(t => t.PointLabel).HasMaxLength(20);
-            //    e.HasIndex(t => t.PointLabel);
+            modelBuilder.Entity<CadGridMissingSlot>(e =>
+            {
+                e.ToTable("CadGridMissingSlots");
+                e.HasKey(s => s.MissingSlotID);
+                e.Property(s => s.SessionId).HasMaxLength(32).IsFixedLength().IsRequired();
+                e.Property(s => s.SheetNumber).IsRequired().HasMaxLength(50);
+                e.HasIndex(s => s.SessionId);
 
-            //    e.HasOne(t => t.SurveySheet)
-            //     .WithMany(s => s.TiePoints)
-            //     .HasForeignKey(t => t.SheetID)
-            //     .OnDelete(DeleteBehavior.Cascade);
-            //});
+                e.HasOne(s => s.Session)
+                 .WithMany(ss => ss.MissingSlots)
+                 .HasForeignKey(s => s.SessionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
 
-            //modelBuilder.Entity<SheetBoundary>(e =>
-            //{
-            //    e.HasKey(b => b.BoundaryID);
-            //    e.Property(b => b.PlotLabel).HasMaxLength(50);
-            //    e.Property(b => b.Geometry).HasColumnType("geometry");
+            modelBuilder.Entity<CadGridMergeError>(e =>
+            {
+                e.ToTable("CadGridMergeErrors");
+                e.HasKey(s => s.MergeErrorID);
+                e.Property(s => s.SessionId).HasMaxLength(32).IsFixedLength().IsRequired();
+                e.Property(s => s.ErrorMessage).IsRequired().HasMaxLength(1000);
+                e.HasIndex(s => s.SessionId);
 
-            //    e.HasOne(b => b.SurveySheet)
-            //     .WithMany(s => s.Boundaries)
-            //     .HasForeignKey(b => b.SheetID)
-            //     .OnDelete(DeleteBehavior.Cascade);
-            //});
+                e.HasOne(s => s.Session)
+                 .WithMany(ss => ss.MergeErrors)
+                 .HasForeignKey(s => s.SessionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
+
+            modelBuilder.Entity<CadGridSkippedFile>(e =>
+            {
+                e.ToTable("CadGridSkippedFiles");
+                e.HasKey(s => s.SkippedFileID);
+                e.Property(s => s.SessionId).HasMaxLength(32).IsFixedLength().IsRequired();
+                e.Property(s => s.FileName).IsRequired().HasMaxLength(260);
+                e.HasIndex(s => s.SessionId);
+
+                e.HasOne(s => s.Session)
+                 .WithMany(ss => ss.SkippedFiles)
+                 .HasForeignKey(s => s.SessionId)
+                 .OnDelete(DeleteBehavior.Cascade);
+            });
         }
     }
 }
