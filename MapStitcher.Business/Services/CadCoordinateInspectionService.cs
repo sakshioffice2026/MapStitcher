@@ -397,10 +397,81 @@ namespace MapStitcher.Business.Services
                 return;
             }
 
-            result.MinX = result.Coordinates.Min(c => c.X);
-            result.MinY = result.Coordinates.Min(c => c.Y);
-            result.MaxX = result.Coordinates.Max(c => c.X);
-            result.MaxY = result.Coordinates.Max(c => c.Y);
+            var xs = result.Coordinates
+                .Select(c => c.X)
+                .Where(v => !double.IsNaN(v) && !double.IsInfinity(v))
+                .OrderBy(v => v)
+                .ToList();
+
+            var ys = result.Coordinates
+                .Select(c => c.Y)
+                .Where(v => !double.IsNaN(v) && !double.IsInfinity(v))
+                .OrderBy(v => v)
+                .ToList();
+
+            if (xs.Count == 0 || ys.Count == 0)
+            {
+                result.MinX = 0;
+                result.MinY = 0;
+                result.MaxX = 0;
+                result.MaxY = 0;
+                return;
+            }
+
+            var (loX, hiX) = RobustRange(xs);
+            var (loY, hiY) = RobustRange(ys);
+
+            result.MinX = loX;
+            result.MaxX = hiX;
+            result.MinY = loY;
+            result.MaxY = hiY;
+        }
+
+        private static (double Lo, double Hi) RobustRange(
+            List<double> sorted)
+        {
+            var count = sorted.Count;
+
+            if (count < 8)
+                return (sorted[0], sorted[count - 1]);
+
+            double Quantile(double q)
+            {
+                var pos = q * (count - 1);
+                var lower = (int)Math.Floor(pos);
+                var upper = (int)Math.Ceiling(pos);
+                var frac = pos - lower;
+
+                return sorted[lower] +
+                       (sorted[upper] - sorted[lower]) * frac;
+            }
+
+            var q1 = Quantile(0.25);
+            var q3 = Quantile(0.75);
+            var iqr = q3 - q1;
+
+            if (iqr <= 0)
+                return (sorted[0], sorted[count - 1]);
+
+            var fenceLo = q1 - 1.5 * iqr;
+            var fenceHi = q3 + 1.5 * iqr;
+
+            var lo = double.MaxValue;
+            var hi = double.MinValue;
+
+            foreach (var v in sorted)
+            {
+                if (v < fenceLo || v > fenceHi)
+                    continue;
+
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+
+            if (lo > hi)
+                return (sorted[0], sorted[count - 1]);
+
+            return (lo, hi);
         }
     }
 }

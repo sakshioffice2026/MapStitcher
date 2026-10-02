@@ -93,6 +93,10 @@ namespace MapStitcher.Business.Services
                     string,
                     (double minX, double minY, double maxX, double maxY)?>();
 
+            // Marking frame results per file
+            var markingFramesByFile =
+                new Dictionary<string, MarkingFrameResult>();
+
             foreach (var file in files)
             {
                 try
@@ -149,12 +153,16 @@ namespace MapStitcher.Business.Services
 
                     docsBySheetId[file] = doc;
 
+                    // Extract marking frame — highest priority for bounds
+                    var markingFrame = MarkingFrameExtractor.Extract(doc);
+                    markingFramesByFile[file] = markingFrame;
+
                     var neatline =
                         _neatlineService.Extract(
                             doc,
                             IndexMapLayerConfig.NeatlineLayer);
 
-                    if (!neatline.IsValid)
+                    if (!neatline.IsValid && !markingFrame.Found)
                     {
                         result.MergeErrors.Add(
                             $"{Path.GetFileName(file)}: " +
@@ -163,8 +171,7 @@ namespace MapStitcher.Business.Services
                             "size unknown.");
                     }
 
-                    neatlinesBySheetId[file] =
-                        neatline;
+                    neatlinesBySheetId[file] = neatline;
 
                     rawBoundsByFile[file] =
                         ComputeRawEntityBounds(doc);
@@ -252,18 +259,35 @@ namespace MapStitcher.Business.Services
                                 ? insp
                                 : null;
 
+                        var markingFrame =
+                            markingFramesByFile.TryGetValue(
+                                t.SheetId,
+                                out var mf)
+                                ? mf
+                                : null;
+
                         double minX;
                         double minY;
                         double maxX;
                         double maxY;
 
-                        if (neatline.IsValid)
+                        // Priority 1: marking frame
+                        if (markingFrame != null && markingFrame.Found)
+                        {
+                            minX = markingFrame.MinX;
+                            minY = markingFrame.MinY;
+                            maxX = markingFrame.MaxX;
+                            maxY = markingFrame.MaxY;
+                        }
+                        // Priority 2: neatline
+                        else if (neatline.IsValid)
                         {
                             minX = neatline.MinX;
                             minY = neatline.MinY;
                             maxX = neatline.MaxX;
                             maxY = neatline.MaxY;
                         }
+                        // Priority 3: inspection bounds
                         else if (
                             inspection != null &&
                             inspection.MaxX -
@@ -276,6 +300,7 @@ namespace MapStitcher.Business.Services
                             maxX = inspection.MaxX;
                             maxY = inspection.MaxY;
                         }
+                        // Priority 4: raw entity bounds
                         else if (
                             rawBoundsByFile.TryGetValue(
                                 t.SheetId,
@@ -411,10 +436,6 @@ namespace MapStitcher.Business.Services
                         : -1
                 }.Max() + 1;
 
-            // DXF export/stitching has intentionally been removed.
-            // outputRootPath is retained in the method signature so the
-            // existing interface/controller does not break.
-
             return result;
         }
 
@@ -487,36 +508,18 @@ namespace MapStitcher.Business.Services
             ComputeRawEntityBounds(
                 CadDocument doc)
         {
-            double minX =
-                double.MaxValue;
-
-            double minY =
-                double.MaxValue;
-
-            double maxX =
-                double.MinValue;
-
-            double maxY =
-                double.MinValue;
-
+            double minX = double.MaxValue;
+            double minY = double.MaxValue;
+            double maxX = double.MinValue;
+            double maxY = double.MinValue;
             bool hasPoints = false;
 
-            void Expand(
-                double x,
-                double y)
+            void Expand(double x, double y)
             {
-                if (x < minX)
-                    minX = x;
-
-                if (y < minY)
-                    minY = y;
-
-                if (x > maxX)
-                    maxX = x;
-
-                if (y > maxY)
-                    maxY = y;
-
+                if (x < minX) minX = x;
+                if (y < minY) minY = y;
+                if (x > maxX) maxX = x;
+                if (y > maxY) maxY = y;
                 hasPoints = true;
             }
 
@@ -531,84 +534,41 @@ namespace MapStitcher.Business.Services
                     if (entity is LwPolyline lw)
                     {
                         foreach (var vertex in lw.Vertices)
-                        {
-                            Expand(
-                                vertex.Location.X,
-                                vertex.Location.Y);
-                        }
+                            Expand(vertex.Location.X, vertex.Location.Y);
                     }
                     else if (entity is Polyline2D p2d)
                     {
                         foreach (var vertex in p2d.Vertices)
-                        {
-                            Expand(
-                                vertex.Location.X,
-                                vertex.Location.Y);
-                        }
+                            Expand(vertex.Location.X, vertex.Location.Y);
                     }
                     else if (entity is Line line)
                     {
-                        Expand(
-                            line.StartPoint.X,
-                            line.StartPoint.Y);
-
-                        Expand(
-                            line.EndPoint.X,
-                            line.EndPoint.Y);
+                        Expand(line.StartPoint.X, line.StartPoint.Y);
+                        Expand(line.EndPoint.X, line.EndPoint.Y);
                     }
                     else if (entity is Circle circle)
                     {
-                        Expand(
-                            circle.Center.X -
-                                circle.Radius,
-                            circle.Center.Y -
-                                circle.Radius);
-
-                        Expand(
-                            circle.Center.X +
-                                circle.Radius,
-                            circle.Center.Y +
-                                circle.Radius);
+                        Expand(circle.Center.X - circle.Radius, circle.Center.Y - circle.Radius);
+                        Expand(circle.Center.X + circle.Radius, circle.Center.Y + circle.Radius);
                     }
                     else if (entity is Arc arc)
                     {
-                        Expand(
-                            arc.Center.X -
-                                arc.Radius,
-                            arc.Center.Y -
-                                arc.Radius);
-
-                        Expand(
-                            arc.Center.X +
-                                arc.Radius,
-                            arc.Center.Y +
-                                arc.Radius);
+                        Expand(arc.Center.X - arc.Radius, arc.Center.Y - arc.Radius);
+                        Expand(arc.Center.X + arc.Radius, arc.Center.Y + arc.Radius);
                     }
                     else if (entity is TextEntity text)
                     {
-                        Expand(
-                            text.InsertPoint.X,
-                            text.InsertPoint.Y);
+                        Expand(text.InsertPoint.X, text.InsertPoint.Y);
                     }
                     else if (entity is MText mtext)
                     {
-                        Expand(
-                            mtext.InsertPoint.X,
-                            mtext.InsertPoint.Y);
+                        Expand(mtext.InsertPoint.X, mtext.InsertPoint.Y);
                     }
                 }
-                catch
-                {
-                }
+                catch { }
             }
 
-            return hasPoints
-                ? (
-                    minX,
-                    minY,
-                    maxX,
-                    maxY)
-                : null;
+            return hasPoints ? (minX, minY, maxX, maxY) : null;
         }
 
         private static List<
@@ -618,8 +578,7 @@ namespace MapStitcher.Business.Services
                 string layerName)
         {
             var rings =
-                new List<
-                    List<(double X, double Y)>>();
+                new List<List<(double X, double Y)>>();
 
             foreach (
                 var entity in
@@ -637,49 +596,31 @@ namespace MapStitcher.Business.Services
                             entityLayer,
                             layerName,
                             StringComparison.OrdinalIgnoreCase))
-                    {
                         continue;
-                    }
 
-                    List<(double X, double Y)>? ring =
-                        null;
+                    List<(double X, double Y)>? ring = null;
 
-                    if (
-                        entity is LwPolyline lw &&
+                    if (entity is LwPolyline lw &&
                         lw.Vertices.Count >= 3)
                     {
-                        ring =
-                            lw.Vertices
-                                .Select(v =>
-                                    (
-                                        v.Location.X,
-                                        v.Location.Y))
-                                .ToList();
+                        ring = lw.Vertices
+                            .Select(v => (v.Location.X, v.Location.Y))
+                            .ToList();
                     }
                     else if (entity is Polyline2D p2d)
                     {
-                        var points =
-                            p2d.Vertices
-                                .Select(v =>
-                                    (
-                                        v.Location.X,
-                                        v.Location.Y))
-                                .ToList();
+                        var points = p2d.Vertices
+                            .Select(v => (v.Location.X, v.Location.Y))
+                            .ToList();
 
                         if (points.Count >= 3)
                             ring = points;
                     }
 
-                    if (
-                        ring != null &&
-                        ring.Count >= 3)
-                    {
+                    if (ring != null && ring.Count >= 3)
                         rings.Add(ring);
-                    }
                 }
-                catch
-                {
-                }
+                catch { }
             }
 
             return rings;
@@ -690,53 +631,24 @@ namespace MapStitcher.Business.Services
                 IEnumerable<Entity> entities,
                 int depth)
         {
-            if (depth > 32)
-                yield break;
+            if (depth > 32) yield break;
 
             foreach (var entity in entities)
             {
-                if (entity == null)
-                    continue;
+                if (entity == null) continue;
 
                 if (entity is Insert insert)
                 {
                     BlockRecord? block = null;
+                    try { block = insert.Block; } catch { continue; }
+                    if (block == null) continue;
 
-                    try
-                    {
-                        block = insert.Block;
-                    }
-                    catch
-                    {
-                        continue;
-                    }
+                    List<Entity>? children = null;
+                    try { children = block.Entities.Where(x => x != null).ToList(); }
+                    catch { continue; }
 
-                    if (block == null)
-                        continue;
-
-                    List<Entity>? children =
-                        null;
-
-                    try
-                    {
-                        children =
-                            block.Entities
-                                .Where(x => x != null)
-                                .ToList();
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-
-                    foreach (
-                        var child in
-                        FlattenDocumentEntities(
-                            children,
-                            depth + 1))
-                    {
+                    foreach (var child in FlattenDocumentEntities(children, depth + 1))
                         yield return child;
-                    }
 
                     continue;
                 }

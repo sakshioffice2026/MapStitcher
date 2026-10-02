@@ -34,22 +34,35 @@
 
     var realWidths = Model.Sheets.Select(s => s.Width).Where(w => w > 0).ToList();
     var realHeights = Model.Sheets.Select(s => s.Height).Where(h => h > 0).ToList();
-    var geoDefaultCell = Math.Max(
-        realWidths.Count > 0 ? realWidths.Average() : 400.0,
-        realHeights.Count > 0 ? realHeights.Average() : 400.0);
+    double GeoMedian(List<double> values)
+    {
+        if (values.Count == 0) return 400.0;
+        var sorted = values.OrderBy(v => v).ToList();
+        var mid = sorted.Count / 2;
+        return sorted.Count % 2 == 1 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2.0;
+    }
+
+    var geoMedianW = GeoMedian(realWidths);
+    var geoMedianH = GeoMedian(realHeights);
+    var geoDefaultCell = Math.Max(geoMedianW, geoMedianH);
+
+    // Outlier sheets (bad neatline / stray far-away geometry) must not
+    // stretch a whole row/column, so cell sizes are clamped to 1.5x median.
+    var geoClampW = geoMedianW * 1.5;
+    var geoClampH = geoMedianH * 1.5;
 
     var geoColumnWidths = new double[Math.Max(geoColCount, 1)];
     var geoRowHeights = new double[Math.Max(geoRowCount, 1)];
 
     for (var c = 0; c < geoColCount; c++)
     {
-        var w = Model.Sheets.Where(s => s.Column == c).Select(s => s.Width).DefaultIfEmpty(0).Max();
+        var w = Model.Sheets.Where(s => s.Column == c).Select(s => Math.Min(s.Width, geoClampW)).DefaultIfEmpty(0).Max();
         geoColumnWidths[c] = w > 0 ? w : geoDefaultCell;
     }
 
     for (var r = 0; r < geoRowCount; r++)
     {
-        var h = Model.Sheets.Where(s => s.Row == r).Select(s => s.Height).DefaultIfEmpty(0).Max();
+        var h = Model.Sheets.Where(s => s.Row == r).Select(s => Math.Min(s.Height, geoClampH)).DefaultIfEmpty(0).Max();
         geoRowHeights[r] = h > 0 ? h : geoDefaultCell;
     }
 
@@ -259,8 +272,12 @@
 
                                 if (sheetsByPosition.TryGetValue((row, column), out var geoSheet))
                                 {
-                                    var originX = cellX + (cellW - geoSheet.Width * geoScale) / 2;
-                                    var originY = cellY + (cellH - geoSheet.Height * geoScale) / 2;
+                                    var fit = (geoSheet.Width > 0 && geoSheet.Height > 0)
+                                        ? Math.Min(1.0, Math.Min(geoColumnWidths[column] / geoSheet.Width, geoRowHeights[row] / geoSheet.Height))
+                                        : 1.0;
+                                    var ps = geoScale * fit;
+                                    var originX = cellX + (cellW - geoSheet.Width * ps) / 2;
+                                    var originY = cellY + (cellH - geoSheet.Height * ps) / 2;
                                     var sheetMinX = geoSheet.MinX;
                                     var sheetMaxY = geoSheet.MaxY;
 
@@ -268,7 +285,7 @@
 
                                     if (hasPolygons)
                                     {
-                                        @Html.Raw($"<rect class=\"geometry-svg-sheet-rect\" x=\"{GeoNum(originX)}\" y=\"{GeoNum(originY)}\" width=\"{GeoNum(geoSheet.Width * geoScale)}\" height=\"{GeoNum(geoSheet.Height * geoScale)}\" />")
+                                        @Html.Raw($"<rect class=\"geometry-svg-sheet-rect\" x=\"{GeoNum(originX)}\" y=\"{GeoNum(originY)}\" width=\"{GeoNum(geoSheet.Width * ps)}\" height=\"{GeoNum(geoSheet.Height * ps)}\" />")
 
                                         foreach (var ring in geoSheet.BoundaryPolygons)
                                         {
@@ -276,8 +293,8 @@
 
                                             var pointsStr = string.Join(" ", ring.Select(p =>
                                             {
-                                                var px = originX + (p.X - sheetMinX) * geoScale;
-                                                var py = originY + (sheetMaxY - p.Y) * geoScale;
+                                                var px = originX + (p.X - sheetMinX) * ps;
+                                                var py = originY + (sheetMaxY - p.Y) * ps;
                                                 return $"{GeoNum(px)},{GeoNum(py)}";
                                             }));
 
@@ -288,11 +305,11 @@
                                     {
                                         <rect class="geometry-svg-sheet-rect"
                                               x="@GeoNum(originX)" y="@GeoNum(originY)"
-                                              width="@GeoNum(geoSheet.Width * geoScale)" height="@GeoNum(geoSheet.Height * geoScale)" />
+                                              width="@GeoNum(geoSheet.Width * ps)" height="@GeoNum(geoSheet.Height * ps)" />
                                     }
 
-                                    @Html.Raw($"<text class=\"geometry-svg-label\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 16)}\">{WebUtility.HtmlEncode("Sheet " + geoSheet.SheetNumber)}</text>")
-                                    @Html.Raw($"<text class=\"geometry-svg-sublabel\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 30)}\">{WebUtility.HtmlEncode(geoSheet.Width.ToString("F0") + " x " + geoSheet.Height.ToString("F0"))}</text>")
+                                    @Html.Raw($"<text class=\"geometry-svg-label\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 16)}\">{WebUtility.HtmlEncode(string.IsNullOrWhiteSpace(geoSheet.SheetNumber) ? "Sheet ? (" + geoSheet.FileName + ")" : "Sheet " + geoSheet.SheetNumber)}</text>")
+                                    @Html.Raw($"<text class=\"geometry-svg-sublabel\" x=\"{GeoNum(originX + 6)}\" y=\"{GeoNum(originY + 30)}\">{WebUtility.HtmlEncode(geoSheet.Width.ToString("F0") + " x " + geoSheet.Height.ToString("F0") + (fit < 1.0 ? " (scaled to fit)" : ""))}</text>")
                                 }
                                 else if (missingByPosition.TryGetValue((row, column), out var geoMissing))
                                 {

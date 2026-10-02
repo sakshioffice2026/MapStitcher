@@ -394,6 +394,9 @@ namespace MapStitcher.Business.Services
                     {
                         try
                         {
+                            if (!IsWithinSheetExtents(flattenedEntity, sheet))
+                                continue;
+
                             Entity outputEntity;
 
                             /*
@@ -891,6 +894,9 @@ namespace MapStitcher.Business.Services
                                 continue;
                             }
 
+                            if (!IsWithinSheetExtents(flattenedEntity, sheet))
+                                continue;
+
                             Entity outputEntity;
 
                             if (ReferenceEquals(
@@ -1079,6 +1085,39 @@ namespace MapStitcher.Business.Services
             }
 
             return Task.CompletedTask;
+        }
+
+        private static bool IsWithinSheetExtents(
+            Entity entity,
+            CadSheetGridItem sheet)
+        {
+            if (sheet.MaxX <= sheet.MinX ||
+                sheet.MaxY <= sheet.MinY)
+            {
+                return true;
+            }
+
+            try
+            {
+                var box = entity.GetBoundingBox();
+
+                if (!IsFiniteBox(box))
+                    return true;
+
+                var margin =
+                    Math.Max(
+                        sheet.MaxX - sheet.MinX,
+                        sheet.MaxY - sheet.MinY) * 0.05;
+
+                return box.Min.X >= sheet.MinX - margin &&
+                       box.Max.X <= sheet.MaxX + margin &&
+                       box.Min.Y >= sheet.MinY - margin &&
+                       box.Max.Y <= sheet.MaxY + margin;
+            }
+            catch
+            {
+                return true;
+            }
         }
 
         private static bool IsFiniteBox(BoundingBox box)
