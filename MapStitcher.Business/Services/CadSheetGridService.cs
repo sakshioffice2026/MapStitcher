@@ -182,6 +182,8 @@ namespace MapStitcher.Business.Services
                 return Task.CompletedTask;
             }
 
+            RecomputeSheetExtents(result);
+
             var columnCount =
                 result.ColumnCount > 0
                     ? result.ColumnCount
@@ -394,7 +396,8 @@ namespace MapStitcher.Business.Services
                     {
                         try
                         {
-                            if (!IsWithinSheetExtents(flattenedEntity, sheet))
+                            if (IsExcludedLayer(flattenedEntity.Layer?.Name) ||
+                                !IsWithinSheetExtents(flattenedEntity, sheet))
                                 continue;
 
                             Entity outputEntity;
@@ -589,6 +592,8 @@ namespace MapStitcher.Business.Services
 
                 return Task.CompletedTask;
             }
+
+            RecomputeSheetExtents(result);
 
             // --- Step 1: grid layout ------------------------------------
             // Baseline column/row anchors, same sizing as the plain grid
@@ -894,7 +899,8 @@ namespace MapStitcher.Business.Services
                                 continue;
                             }
 
-                            if (!IsWithinSheetExtents(flattenedEntity, sheet))
+                            if (IsExcludedLayer(flattenedEntity.Layer?.Name) ||
+                                !IsWithinSheetExtents(flattenedEntity, sheet))
                                 continue;
 
                             Entity outputEntity;
@@ -1087,6 +1093,249 @@ namespace MapStitcher.Business.Services
             return Task.CompletedTask;
         }
 
+        private static readonly string[] ExcludedLayerKeys =
+        {
+            "symtree",
+            "symtitle",
+            "legend"
+        };
+
+        private static bool IsExcludedLayer(string? layerName)
+        {
+            if (string.IsNullOrWhiteSpace(layerName))
+                return false;
+
+            var key = layerName
+                .Replace("_", string.Empty)
+                .Replace(" ", string.Empty)
+                .Replace("-", string.Empty)
+                .ToLowerInvariant();
+
+            return ExcludedLayerKeys.Any(k => key.Contains(k));
+        }
+
+        private static readonly string[] FrameLayers =
+        {
+            IndexMapLayerConfig.NeatlineLayer,
+            IndexMapLayerConfig.VillageBoundaryLayer
+        };
+
+        private void RecomputeSheetExtents(
+            CadSheetGridResult result)
+        {
+            foreach (var sheet in result.Sheets)
+            {
+                try
+                {
+                    if (!File.Exists(sheet.FilePath))
+                        continue;
+
+                    var errors =
+                        new List<string>();
+
+                    var document =
+                        ReadCadDocument(
+                            sheet.FilePath,
+                            errors);
+
+                    if (document == null)
+                        continue;
+
+                    var flattened =
+                        new List<Entity>();
+
+                    foreach (var entity in
+                             document.Entities.ToList())
+                    {
+                        FlattenEntity(
+                            entity,
+                            flattened,
+                            errors,
+                            sheet.FileName);
+                    }
+
+                    var frame =
+                        ComputeFrame(flattened);
+
+                    if (frame == null)
+                        continue;
+
+                    sheet.MinX = frame.Value.MinX;
+                    sheet.MinY = frame.Value.MinY;
+                    sheet.MaxX = frame.Value.MaxX;
+                    sheet.MaxY = frame.Value.MaxY;
+                }
+                catch
+                {
+                    // Keep inspection extents for this sheet.
+                }
+            }
+        }
+
+        private static (double MinX, double MinY, double MaxX, double MaxY)?
+            ComputeFrame(List<Entity> entities)
+        {
+            var frameXs = new List<double>();
+            var frameYs = new List<double>();
+            var allXs = new List<double>();
+            var allYs = new List<double>();
+
+            foreach (var entity in entities)
+            {
+                if (IsExcludedLayer(entity.Layer?.Name))
+                    continue;
+
+                var points =
+                    GetEntityPoints(entity);
+
+                if (points.Count == 0)
+                    continue;
+
+                var layerName =
+                    entity.Layer?.Name ?? string.Empty;
+
+                if (IsExcludedLayer(layerName))
+                    continue;
+
+                var isFrameLayer =
+                    string.Equals(
+                        layerName,
+                        IndexMapLayerConfig.NeatlineLayer,
+                        StringComparison.OrdinalIgnoreCase);
+
+                foreach (var (px, py) in points)
+                {
+                    allXs.Add(px);
+                    allYs.Add(py);
+
+                    if (isFrameLayer)
+                    {
+                        frameXs.Add(px);
+                        frameYs.Add(py);
+                    }
+                }
+            }
+
+            var xs = frameXs.Count > 0 ? frameXs : allXs;
+            var ys = frameYs.Count > 0 ? frameYs : allYs;
+
+            if (xs.Count == 0 || ys.Count == 0)
+                return null;
+
+            xs.Sort();
+            ys.Sort();
+
+            var (loX, hiX) = RobustRange(xs);
+            var (loY, hiY) = RobustRange(ys);
+
+            if (hiX <= loX || hiY <= loY)
+                return null;
+
+            return (loX, loY, hiX, hiY);
+        }
+
+        private static List<(double X, double Y)> GetEntityPoints(
+            Entity entity)
+        {
+            var points =
+                new List<(double X, double Y)>();
+
+            void Add(double x, double y)
+            {
+                if (IsFinite(x) && IsFinite(y))
+                    points.Add((x, y));
+            }
+
+            try
+            {
+                switch (entity)
+                {
+                    case LwPolyline lw:
+                        foreach (var v in lw.Vertices)
+                            Add(v.Location.X, v.Location.Y);
+                        break;
+
+                    case Polyline2D p2d:
+                        foreach (var v in p2d.Vertices)
+                            Add(v.Location.X, v.Location.Y);
+                        break;
+
+                    case Polyline3D p3d:
+                        foreach (var v in p3d.Vertices)
+                            Add(v.Location.X, v.Location.Y);
+                        break;
+
+                    case Line line:
+                        Add(line.StartPoint.X, line.StartPoint.Y);
+                        Add(line.EndPoint.X, line.EndPoint.Y);
+                        break;
+
+                    default:
+                        var box = entity.GetBoundingBox();
+
+                        if (IsFiniteBox(box))
+                        {
+                            Add(box.Min.X, box.Min.Y);
+                            Add(box.Max.X, box.Max.Y);
+                        }
+
+                        break;
+                }
+            }
+            catch
+            {
+                points.Clear();
+            }
+
+            return points;
+        }
+
+        private static (double Lo, double Hi) RobustRange(
+            List<double> sorted)
+        {
+            var count = sorted.Count;
+
+            if (count < 8)
+                return (sorted[0], sorted[count - 1]);
+
+            double Quantile(double q)
+            {
+                var pos = q * (count - 1);
+                var lower = (int)Math.Floor(pos);
+                var upper = (int)Math.Ceiling(pos);
+
+                return sorted[lower] +
+                       (sorted[upper] - sorted[lower]) *
+                       (pos - lower);
+            }
+
+            var q1 = Quantile(0.25);
+            var q3 = Quantile(0.75);
+            var iqr = q3 - q1;
+
+            if (iqr <= 0)
+                return (sorted[0], sorted[count - 1]);
+
+            var fenceLo = q1 - 3.0 * iqr;
+            var fenceHi = q3 + 3.0 * iqr;
+
+            var lo = double.MaxValue;
+            var hi = double.MinValue;
+
+            foreach (var v in sorted)
+            {
+                if (v < fenceLo || v > fenceHi)
+                    continue;
+
+                if (v < lo) lo = v;
+                if (v > hi) hi = v;
+            }
+
+            return lo > hi
+                ? (sorted[0], sorted[count - 1])
+                : (lo, hi);
+        }
+
         private static bool IsWithinSheetExtents(
             Entity entity,
             CadSheetGridItem sheet)
@@ -1102,21 +1351,34 @@ namespace MapStitcher.Business.Services
                 var box = entity.GetBoundingBox();
 
                 if (!IsFiniteBox(box))
-                    return true;
+                    return false;
+
+                var frameWidth = sheet.MaxX - sheet.MinX;
+                var frameHeight = sheet.MaxY - sheet.MinY;
 
                 var margin =
-                    Math.Max(
-                        sheet.MaxX - sheet.MinX,
-                        sheet.MaxY - sheet.MinY) * 0.05;
+                    Math.Max(frameWidth, frameHeight) * 0.10;
 
-                return box.Min.X >= sheet.MinX - margin &&
-                       box.Max.X <= sheet.MaxX + margin &&
-                       box.Min.Y >= sheet.MinY - margin &&
-                       box.Max.Y <= sheet.MaxY + margin;
+                var boxWidth = box.Max.X - box.Min.X;
+                var boxHeight = box.Max.Y - box.Min.Y;
+
+                if (boxWidth > frameWidth * 1.05 ||
+                    boxHeight > frameHeight * 1.05)
+                {
+                    return false;
+                }
+
+                var centerX = (box.Min.X + box.Max.X) / 2.0;
+                var centerY = (box.Min.Y + box.Max.Y) / 2.0;
+
+                return centerX >= sheet.MinX - margin &&
+                       centerX <= sheet.MaxX + margin &&
+                       centerY >= sheet.MinY - margin &&
+                       centerY <= sheet.MaxY + margin;
             }
             catch
             {
-                return true;
+                return false;
             }
         }
 
