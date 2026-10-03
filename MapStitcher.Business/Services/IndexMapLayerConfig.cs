@@ -27,5 +27,28 @@ namespace MapStitcher.Business.Services
             VillageBoundaryLayer,
             SurveyNumberLayer
         };
+
+        // Matches "Line_Marking_Adusting_Sheet" and spelling / separator
+        // variants such as "Line_Marking_Adjusting_Sheet".
+        public static bool IsMarkingFrameLayer(string? layerName)
+        {
+            if (string.IsNullOrWhiteSpace(layerName))
+                return false;
+
+            var key = layerName
+                .Replace("_", string.Empty)
+                .Replace(" ", string.Empty)
+                .Replace("-", string.Empty)
+                .ToLowerInvariant();
+
+            if (key == "linemarkingadustingsheet" ||
+                key == "linemarkingadjustingsheet")
+            {
+                return true;
+            }
+
+            return key.Contains("marking") &&
+                   (key.Contains("adust") || key.Contains("adjust"));
+        }
     }
 }

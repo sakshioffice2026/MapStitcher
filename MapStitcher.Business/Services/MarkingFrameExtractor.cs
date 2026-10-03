@@ -21,41 +21,74 @@ namespace MapStitcher.Business.Services
     {
         public static MarkingFrameResult Extract(CadDocument doc)
         {
-            var candidates = new List<List<(double X, double Y)>>();
+            return Extract(FlattenEntities(doc.Entities, 0));
+        }
 
-            foreach (var entity in FlattenEntities(doc.Entities, 0))
+        // Works on an already flattened entity list (exploded INSERTs).
+        public static MarkingFrameResult Extract(IEnumerable<Entity> entities)
+        {
+            var rings = new List<List<(double X, double Y)>>();
+            var allPoints = new List<(double X, double Y)>();
+
+            foreach (var entity in entities)
             {
-                var layerName = entity.Layer?.Name ?? string.Empty;
-
-                if (!string.Equals(
-                        layerName,
-                        IndexMapLayerConfig.MarkingFrameLayer,
-                        StringComparison.OrdinalIgnoreCase))
+                if (entity == null)
                     continue;
 
-                List<(double X, double Y)>? ring = null;
+                if (!IndexMapLayerConfig.IsMarkingFrameLayer(entity.Layer?.Name))
+                    continue;
 
-                if (entity is LwPolyline lw && lw.Vertices.Count >= 3)
-                    ring = lw.Vertices.Select(v => (v.Location.X, v.Location.Y)).ToList();
-                else if (entity is Polyline2D p2d && p2d.Vertices.Count >= 3)
-                    ring = p2d.Vertices.Select(v => (v.Location.X, v.Location.Y)).ToList();
+                var points = GetPoints(entity);
 
-                if (ring != null && ring.Count >= 3)
-                    candidates.Add(ring);
+                if (points.Count == 0)
+                    continue;
+
+                allPoints.AddRange(points);
+
+                var isPolylineLike =
+                    entity is LwPolyline ||
+                    entity is Polyline2D ||
+                    entity is Polyline3D;
+
+                if (isPolylineLike && points.Count >= 3)
+                    rings.Add(points);
             }
 
-            if (candidates.Count == 0)
+            if (allPoints.Count == 0)
                 return new MarkingFrameResult { Found = false };
 
-            // Pick largest closed polygon by bounding-box area
-            var best = candidates
-                .OrderByDescending(r =>
+            List<(double X, double Y)>? best = null;
+
+            if (rings.Count > 0)
+            {
+                best = rings
+                    .OrderByDescending(BoxArea)
+                    .First();
+
+                if (BoxArea(best) <= 0)
+                    best = null;
+            }
+
+            // No usable closed polyline / polygon: build the frame from
+            // the extent of whatever lines the marking layer holds.
+            if (best == null)
+            {
+                var minX = allPoints.Min(p => p.X);
+                var minY = allPoints.Min(p => p.Y);
+                var maxX = allPoints.Max(p => p.X);
+                var maxY = allPoints.Max(p => p.Y);
+
+                if (maxX <= minX || maxY <= minY)
+                    return new MarkingFrameResult { Found = false };
+
+                best = new List<(double X, double Y)>
                 {
-                    var w = r.Max(p => p.X) - r.Min(p => p.X);
-                    var h = r.Max(p => p.Y) - r.Min(p => p.Y);
-                    return w * h;
-                })
-                .First();
+                    (minX, minY),
+                    (maxX, minY),
+                    (maxX, maxY),
+                    (minX, maxY)
+                };
+            }
 
             return new MarkingFrameResult
             {
@@ -90,6 +123,12 @@ namespace MapStitcher.Business.Services
                         PointInPolygon(v.Location.X, v.Location.Y, frame.Polygon));
                 }
 
+                if (entity is Polyline3D p3d && p3d.Vertices.Count > 0)
+                {
+                    return p3d.Vertices.All(v =>
+                        PointInPolygon(v.Location.X, v.Location.Y, frame.Polygon));
+                }
+
                 if (entity is Line line)
                 {
                     // Both endpoints must be inside
@@ -109,7 +148,7 @@ namespace MapStitcher.Business.Services
                 if (entity is Arc arc)
                     return PointInPolygon(arc.Center.X, arc.Center.Y, frame.Polygon);
 
-                if (entity is Point point)
+                if (entity is ACadSharp.Entities.Point point)
                     return PointInPolygon(point.Location.X, point.Location.Y, frame.Polygon);
 
                 // Unknown type — keep it
@@ -119,6 +158,65 @@ namespace MapStitcher.Business.Services
             {
                 return true;
             }
+        }
+
+        private static double BoxArea(List<(double X, double Y)> ring)
+        {
+            var w = ring.Max(p => p.X) - ring.Min(p => p.X);
+            var h = ring.Max(p => p.Y) - ring.Min(p => p.Y);
+            return w * h;
+        }
+
+        private static List<(double X, double Y)> GetPoints(Entity entity)
+        {
+            var points = new List<(double X, double Y)>();
+
+            void Add(double x, double y)
+            {
+                if (!double.IsNaN(x) && !double.IsInfinity(x) &&
+                    !double.IsNaN(y) && !double.IsInfinity(y))
+                {
+                    points.Add((x, y));
+                }
+            }
+
+            try
+            {
+                switch (entity)
+                {
+                    case LwPolyline lw:
+                        foreach (var v in lw.Vertices)
+                            Add(v.Location.X, v.Location.Y);
+                        break;
+
+                    case Polyline2D p2d:
+                        foreach (var v in p2d.Vertices)
+                            Add(v.Location.X, v.Location.Y);
+                        break;
+
+                    case Polyline3D p3d:
+                        foreach (var v in p3d.Vertices)
+                            Add(v.Location.X, v.Location.Y);
+                        break;
+
+                    case Line line:
+                        Add(line.StartPoint.X, line.StartPoint.Y);
+                        Add(line.EndPoint.X, line.EndPoint.Y);
+                        break;
+
+                    default:
+                        var box = entity.GetBoundingBox();
+                        Add(box.Min.X, box.Min.Y);
+                        Add(box.Max.X, box.Max.Y);
+                        break;
+                }
+            }
+            catch
+            {
+                points.Clear();
+            }
+
+            return points;
         }
 
         // Ray-casting point-in-polygon

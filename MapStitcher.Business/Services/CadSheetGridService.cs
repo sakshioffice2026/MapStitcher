@@ -391,13 +391,31 @@ namespace MapStitcher.Business.Services
                         continue;
                     }
 
+                    flattenedEntities =
+                        FrameTrimmer.Trim(
+                            flattenedEntities,
+                            out var markingFrameFound);
+
+                    if (!markingFrameFound)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: no " +
+                            $"'{IndexMapLayerConfig.MarkingFrameLayer}' " +
+                            "frame found — sheet merged without frame trim.");
+                    }
+
                     foreach (var flattenedEntity
                              in flattenedEntities)
                     {
                         try
                         {
+                            var isMarkingLayer =
+                                IndexMapLayerConfig.IsMarkingFrameLayer(
+                                    flattenedEntity.Layer?.Name);
+
                             if (IsExcludedLayer(flattenedEntity.Layer?.Name) ||
-                                !IsWithinSheetExtents(flattenedEntity, sheet))
+                                (!isMarkingLayer &&
+                                 !IsWithinSheetExtents(flattenedEntity, sheet)))
                                 continue;
 
                             Entity outputEntity;
@@ -873,6 +891,19 @@ namespace MapStitcher.Business.Services
                         continue;
                     }
 
+                    flattenedEntities =
+                        FrameTrimmer.Trim(
+                            flattenedEntities,
+                            out var markingFrameFound);
+
+                    if (!markingFrameFound)
+                    {
+                        result.MergeErrors.Add(
+                            $"{sheet.FileName}: no " +
+                            $"'{IndexMapLayerConfig.MarkingFrameLayer}' " +
+                            "frame found — sheet merged without frame trim.");
+                    }
+
                     var sheetPlaced = false;
 
                     foreach (var flattenedEntity in flattenedEntities)
@@ -893,14 +924,20 @@ namespace MapStitcher.Business.Services
                             // marginal sheet furniture and is dropped so
                             // the stitched export has clean parcel lines
                             // only, with no overlapping text or frames.
-                            if (!IndexMapLayerConfig.CadastralKeepLayers
+                            var isMarkingLayer =
+                                IndexMapLayerConfig.IsMarkingFrameLayer(
+                                    layerName);
+
+                            if (!isMarkingLayer &&
+                                !IndexMapLayerConfig.CadastralKeepLayers
                                     .Contains(layerName))
                             {
                                 continue;
                             }
 
                             if (IsExcludedLayer(flattenedEntity.Layer?.Name) ||
-                                !IsWithinSheetExtents(flattenedEntity, sheet))
+                                (!isMarkingLayer &&
+                                 !IsWithinSheetExtents(flattenedEntity, sheet)))
                                 continue;
 
                             Entity outputEntity;
