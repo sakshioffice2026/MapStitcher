@@ -1,0 +1,785 @@
+﻿/* wwwroot/css/workspace.css
+ *
+ * CAD Sheet Workspace
+ *
+ * Important:
+ * The CAD view does NOT draw rectangular sheet cards.
+ *
+ * The actual DWG/DXF polygon geometry comes from
+ * SvgMosaicExportService.
+ */
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+
+html,
+body {
+    width: 100%;
+    height: 100%;
+}
+
+
+body {
+    background: #0b1220;
+    color: #e2e8f0;
+    font-family: "Segoe UI", sans-serif;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+
+/* =========================================================
+   TOP BAR
+   ========================================================= */
+
+.top-bar {
+    height: 64px;
+    background: #111827;
+    border-bottom: 1px solid #334155;
+    padding: 10px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    flex-shrink: 0;
+}
+
+
+.project-name {
+    font-size: 15px;
+    font-weight: 600;
+}
+
+
+.jurisdiction {
+    margin-top: 2px;
+    font-size: 12px;
+    color: #94a3b8;
+}
+
+
+    .jurisdiction span {
+        color: #38bdf8;
+        font-weight: 600;
+    }
+
+
+    .jurisdiction .separator {
+        color: #475569;
+        padding: 0 5px;
+    }
+
+
+.top-actions {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+}
+
+
+/* =========================================================
+   ALERTS
+   ========================================================= */
+
+.alert-bar {
+    padding: 8px 20px;
+    font-size: 12px;
+    flex-shrink: 0;
+}
+
+
+/* =========================================================
+   MAIN LAYOUT
+   ========================================================= */
+
+.workspace-layout {
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+}
+
+
+/* =========================================================
+   LEFT SIDEBAR
+   ========================================================= */
+
+.sidebar {
+    width: 250px;
+    background: #111827;
+    border-right: 1px solid #334155;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    min-height: 0;
+}
+
+
+.sidebar-header {
+    padding: 12px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #64748b;
+    border-bottom: 1px solid #334155;
+}
+
+
+.sidebar-sheet-list {
+    flex: 1;
+    overflow-y: auto;
+}
+
+
+.sidebar-sheet {
+    position: relative;
+    padding: 10px 34px 10px 14px;
+    border-bottom: 1px solid #1e293b;
+    cursor: pointer;
+    font-size: 12px;
+    transition: background 0.15s ease;
+}
+
+
+    .sidebar-sheet:hover {
+        background: #0f172a;
+    }
+
+
+    .sidebar-sheet.placed {
+        border-left: 3px solid #22c55e;
+    }
+
+
+    .sidebar-sheet.unplaced {
+        border-left: 3px solid #f59e0b;
+    }
+
+
+    .sidebar-sheet .sheet-num {
+        font-weight: 600;
+        color: #e2e8f0;
+    }
+
+
+    .sidebar-sheet .sheet-status {
+        font-size: 10px;
+        margin-top: 3px;
+    }
+
+
+.sidebar-remove-btn {
+    position: absolute;
+    top: 8px;
+    right: 8px;
+    background: transparent;
+    border: none;
+    color: #475569;
+    font-size: 14px;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 4px;
+}
+
+
+    .sidebar-remove-btn:hover {
+        color: #ef4444;
+        background: #1e293b;
+    }
+
+
+.sidebar-upload {
+    padding: 12px 14px;
+    border-top: 1px solid #334155;
+}
+
+
+/* =========================================================
+   CENTER AREA
+   ========================================================= */
+
+.canvas-area {
+    flex: 1;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+}
+
+
+.canvas-toolbar {
+    height: 44px;
+    background: #111827;
+    border-bottom: 1px solid #334155;
+    padding: 7px 14px;
+    display: flex;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+
+.view-toggle {
+    display: flex;
+    gap: 4px;
+}
+
+
+    .view-toggle button {
+        background: #0f172a;
+        border: 1px solid #334155;
+        color: #94a3b8;
+        padding: 5px 13px;
+        font-size: 11px;
+        border-radius: 4px;
+        cursor: pointer;
+    }
+
+
+        .view-toggle button:hover {
+            border-color: #38bdf8;
+            color: #38bdf8;
+        }
+
+
+        .view-toggle button.active {
+            background: #0284c7;
+            border-color: #0284c7;
+            color: white;
+        }
+
+
+.toolbar-info {
+    margin-left: auto;
+    color: #64748b;
+    font-size: 11px;
+}
+
+
+/* =========================================================
+   CONTENT
+   ========================================================= */
+
+.canvas-scroll {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: hidden;
+    background: #080f1d;
+}
+
+
+/* =========================================================
+   CAD GEOMETRY VIEW
+   ========================================================= */
+
+#cad-view {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+    background: #080f1d;
+    overflow: hidden;
+}
+
+
+.cad-toolbar {
+    height: 40px;
+    flex-shrink: 0;
+    background: #0f172a;
+    border-bottom: 1px solid #263449;
+    padding: 0 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+}
+
+
+.cad-toolbar-title {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 11px;
+}
+
+
+    .cad-toolbar-title strong {
+        color: #e2e8f0;
+    }
+
+
+    .cad-toolbar-title span {
+        color: #64748b;
+    }
+
+
+.cad-toolbar-actions {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+
+
+    .cad-toolbar-actions button {
+        min-width: 32px;
+        height: 26px;
+        padding: 0 8px;
+        background: #111827;
+        border: 1px solid #334155;
+        border-radius: 4px;
+        color: #cbd5e1;
+        font-size: 11px;
+        cursor: pointer;
+    }
+
+
+        .cad-toolbar-actions button:hover {
+            border-color: #38bdf8;
+            color: #38bdf8;
+        }
+
+
+/* =========================================================
+   CAD GEOMETRY CONTAINER
+   ========================================================= */
+
+.cad-geometry-container {
+    position: relative;
+    flex: 1;
+    min-height: 0;
+    overflow: auto;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background-color: #080f1d;
+    /*
+     * Very subtle CAD-style drafting grid.
+     *
+     * This is only the background.
+     * It does NOT represent sheet geometry.
+     */
+
+    background-image: linear-gradient( rgba(148, 163, 184, 0.025) 1px, transparent 1px ), linear-gradient( 90deg, rgba(148, 163, 184, 0.025) 1px, transparent 1px );
+    background-size: 25px 25px;
+}
+
+
+/* =========================================================
+   ACTUAL SVG
+   ========================================================= */
+
+.cad-geometry-content {
+    width: 100%;
+    height: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    overflow: visible;
+}
+
+
+    .cad-geometry-content svg {
+        display: block;
+        width: 100%;
+        height: 100%;
+        max-width: none;
+        max-height: none;
+        background: transparent;
+        transform-origin: center center;
+        transition: transform 0.15s ease;
+    }
+
+
+/*
+ * Actual CAD polygon.
+ *
+ * No rectangle is generated here.
+ */
+
+.cad-boundary {
+    vector-effect: non-scaling-stroke;
+    cursor: pointer;
+    transition: opacity 0.12s ease, stroke-width 0.12s ease;
+}
+
+
+    .cad-boundary:hover,
+    .cad-boundary-hover {
+        opacity: 0.95;
+        stroke-width: 1.2;
+    }
+
+
+/*
+ * Text inside the SVG is intentionally subtle.
+ */
+
+.cad-geometry-content svg text {
+    pointer-events: none;
+    user-select: none;
+}
+
+
+/* =========================================================
+   CAD LOADING
+   ========================================================= */
+
+.cad-geometry-loading {
+    position: absolute;
+    inset: 0;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(8, 15, 29, 0.92);
+    color: #64748b;
+    font-size: 12px;
+}
+
+
+/* =========================================================
+   CAD EMPTY
+   ========================================================= */
+
+.cad-geometry-empty {
+    position: absolute;
+    inset: 0;
+    z-index: 15;
+    align-items: center;
+    justify-content: center;
+    color: #64748b;
+    font-size: 12px;
+}
+
+
+/* =========================================================
+   PLACEMENT GRID
+   ========================================================= */
+
+#grid-view {
+    width: max-content;
+    margin: 32px auto;
+    display: grid;
+    gap: 6px;
+    grid-template-columns: repeat( var(--grid-cols, 3), 160px );
+    grid-template-rows: repeat( var(--grid-rows, 3), 120px );
+}
+
+
+.grid-cell {
+    position: relative;
+    border-radius: 6px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    font-size: 12px;
+    transition: box-shadow 0.2s, border-color 0.2s;
+    user-select: none;
+}
+
+
+    .grid-cell.empty {
+        background: #111827;
+        border: 2px dashed #334155;
+        color: #475569;
+        cursor: pointer;
+    }
+
+
+        .grid-cell.empty:hover {
+            border-color: #38bdf8;
+            color: #38bdf8;
+        }
+
+
+    .grid-cell.filled {
+        background: #172b45;
+        border: 2px solid #0284c7;
+        cursor: grab;
+    }
+
+
+        .grid-cell.filled:hover {
+            box-shadow: 0 0 0 2px #38bdf8;
+        }
+
+
+.cell-coord {
+    position: absolute;
+    top: 4px;
+    right: 6px;
+    font-size: 9px;
+    color: #475569;
+}
+
+
+.cell-label {
+    font-weight: 700;
+    font-size: 14px;
+    color: #38bdf8;
+}
+
+
+.cell-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    margin-top: 7px;
+}
+
+
+.empty-plus {
+    font-size: 22px;
+    color: #334155;
+}
+
+
+.empty-label {
+    font-size: 10px;
+    margin-top: 4px;
+}
+
+
+.grid-cell.connect-target {
+    border-color: #22c55e !important;
+    background: #0a2a1a !important;
+    animation: connect-pulse 1.2s ease-in-out infinite;
+}
+
+
+.connect-label {
+    font-size: 11px;
+    font-weight: 700;
+    color: #22c55e;
+    margin-top: 4px;
+}
+
+
+@keyframes connect-pulse {
+
+    0%, 100% {
+        box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+    }
+
+    50% {
+        box-shadow: 0 0 0 8px rgba(34, 197, 94, 0);
+    }
+}
+
+
+.grid-cell.snap-hint {
+    border-color: #38bdf8 !important;
+    background: #0c2333 !important;
+    box-shadow: 0 0 0 3px rgba(56, 189, 248, 0.35);
+}
+
+
+.cell-warning-badge {
+    position: absolute;
+    bottom: 4px;
+    left: 6px;
+    right: 6px;
+    font-size: 9px;
+    color: #fca5a5;
+    background: rgba(239, 68, 68, 0.12);
+    border: 1px solid rgba(239, 68, 68, 0.4);
+    border-radius: 4px;
+    padding: 2px 4px;
+    text-align: center;
+    line-height: 1.3;
+}
+
+
+/* =========================================================
+   RIGHT DETAIL PANEL
+   ========================================================= */
+
+.detail-panel {
+    width: 270px;
+    background: #111827;
+    border-left: 1px solid #334155;
+    display: flex;
+    flex-direction: column;
+    flex-shrink: 0;
+    min-height: 0;
+}
+
+
+.detail-header {
+    padding: 12px 14px;
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    color: #64748b;
+    border-bottom: 1px solid #334155;
+}
+
+
+.detail-body {
+    padding: 14px;
+    font-size: 12px;
+    overflow-y: auto;
+}
+
+
+.detail-row {
+    margin-bottom: 12px;
+}
+
+
+    .detail-row label {
+        display: block;
+        font-size: 9px;
+        color: #64748b;
+        text-transform: uppercase;
+        letter-spacing: 0.5px;
+        margin-bottom: 3px;
+    }
+
+
+    .detail-row span {
+        color: #e2e8f0;
+        font-weight: 500;
+    }
+
+
+.detail-empty {
+    color: #475569;
+    font-size: 12px;
+}
+
+
+.detail-actions {
+    padding: 14px;
+    border-top: 1px solid #334155;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+
+.merge-suggestions {
+    padding: 0 14px 10px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+
+/* =========================================================
+   LEGEND
+   ========================================================= */
+
+.legend {
+    padding: 10px 14px;
+    border-top: 1px solid #334155;
+    margin-top: auto;
+}
+
+
+.legend-title {
+    font-size: 10px;
+    color: #64748b;
+    text-transform: uppercase;
+    letter-spacing: 1px;
+    margin-bottom: 6px;
+}
+
+
+.legend-item {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: #94a3b8;
+    margin-bottom: 4px;
+}
+
+
+.legend-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+
+
+/* =========================================================
+   TOAST
+   ========================================================= */
+
+.toast-feedback {
+    position: fixed;
+    bottom: 24px;
+    left: 50%;
+    transform: translateX(-50%) translateY(12px);
+    background: #1e293b;
+    border: 1px solid #334155;
+    color: #e2e8f0;
+    padding: 10px 18px;
+    border-radius: 6px;
+    font-size: 12px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s, transform 0.2s;
+    z-index: 500;
+}
+
+
+    .toast-feedback.show {
+        opacity: 1;
+        transform: translateX(-50%) translateY(0);
+    }
+
+
+    .toast-feedback.success {
+        border-color: #22c55e;
+        color: #22c55e;
+    }
+
+
+    .toast-feedback.neutral {
+        border-color: #f59e0b;
+        color: #f59e0b;
+    }
+
+
+/* =========================================================
+   RESPONSIVE
+   ========================================================= */
+
+@media (max-width: 1100px) {
+
+    .sidebar {
+        width: 210px;
+    }
+
+    .detail-panel {
+        width: 230px;
+    }
+
+    .top-actions {
+        gap: 4px;
+    }
+}
+
+
+@media (max-width: 850px) {
+
+    .sidebar {
+        width: 190px;
+    }
+
+    .detail-panel {
+        display: none;
+    }
+}
